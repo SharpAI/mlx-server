@@ -450,6 +450,100 @@ else
 fi
 
 
+# ── Test 18: Enhanced /health endpoint ───────────────────────────────
+log "Test 18: Enhanced /health endpoint (v2)"
+
+HEALTH_V2=$(curl -sf "$URL/health")
+
+HEALTH_STATUS=$(echo "$HEALTH_V2" | jq -r '.status // empty')
+HEALTH_MEM=$(echo "$HEALTH_V2" | jq -r '.memory.active_mb // empty')
+HEALTH_STATS=$(echo "$HEALTH_V2" | jq -r '.stats.requests_total // empty')
+HEALTH_ARCH=$(echo "$HEALTH_V2" | jq -r '.memory.gpu_architecture // empty')
+HEALTH_VISION=$(echo "$HEALTH_V2" | jq -r '.vision // empty')
+
+if [ "$HEALTH_STATUS" = "ok" ]; then
+    pass "Health v2: status=ok"
+else
+    fail "Health v2: unexpected status=$HEALTH_STATUS"
+fi
+
+if [ -n "$HEALTH_MEM" ] && [ "$HEALTH_MEM" -ge 0 ] 2>/dev/null; then
+    pass "Health v2: memory.active_mb=$HEALTH_MEM"
+else
+    fail "Health v2: missing memory.active_mb"
+fi
+
+if [ -n "$HEALTH_STATS" ] && [ "$HEALTH_STATS" -ge 0 ] 2>/dev/null; then
+    pass "Health v2: stats.requests_total=$HEALTH_STATS"
+else
+    fail "Health v2: missing stats.requests_total"
+fi
+
+if [ -n "$HEALTH_ARCH" ]; then
+    pass "Health v2: gpu_architecture=$HEALTH_ARCH"
+else
+    fail "Health v2: missing gpu_architecture"
+fi
+
+
+# ── Test 19: /metrics Prometheus endpoint ────────────────────────────
+log "Test 19: /metrics Prometheus endpoint"
+
+METRICS_RESP=$(curl -sf "$URL/metrics")
+
+if echo "$METRICS_RESP" | grep -q "mlx_server_requests_total"; then
+    pass "Metrics: contains mlx_server_requests_total"
+else
+    fail "Metrics: missing mlx_server_requests_total"
+fi
+
+if echo "$METRICS_RESP" | grep -q "mlx_server_memory_active_bytes"; then
+    pass "Metrics: contains mlx_server_memory_active_bytes"
+else
+    fail "Metrics: missing mlx_server_memory_active_bytes"
+fi
+
+if echo "$METRICS_RESP" | grep -q "mlx_server_tokens_per_second"; then
+    pass "Metrics: contains mlx_server_tokens_per_second"
+else
+    fail "Metrics: missing mlx_server_tokens_per_second"
+fi
+
+if echo "$METRICS_RESP" | grep -q "mlx_server_uptime_seconds"; then
+    pass "Metrics: contains mlx_server_uptime_seconds"
+else
+    fail "Metrics: missing mlx_server_uptime_seconds"
+fi
+
+# Verify Prometheus format (TYPE and HELP comments)
+if echo "$METRICS_RESP" | grep -q "^# TYPE"; then
+    pass "Metrics: has Prometheus TYPE comments"
+else
+    fail "Metrics: missing Prometheus TYPE comments"
+fi
+
+
+# ── Test 20: Stats accumulation ──────────────────────────────────────
+log "Test 20: Stats accumulation"
+
+# Get stats after all previous test requests
+STATS_RESP=$(curl -sf "$URL/health")
+STATS_TOTAL=$(echo "$STATS_RESP" | jq -r '.stats.requests_total // 0')
+STATS_TOKENS=$(echo "$STATS_RESP" | jq -r '.stats.tokens_generated // 0')
+
+if [ "$STATS_TOTAL" -gt 0 ] 2>/dev/null; then
+    pass "Stats: requests_total=$STATS_TOTAL (accumulated from test requests)"
+else
+    fail "Stats: requests_total=$STATS_TOTAL (expected > 0 after test requests)"
+fi
+
+if [ "$STATS_TOKENS" -gt 0 ] 2>/dev/null; then
+    pass "Stats: tokens_generated=$STATS_TOKENS (accumulated from test requests)"
+else
+    fail "Stats: tokens_generated=$STATS_TOKENS (expected > 0 after test requests)"
+fi
+
+
 # ── Test 13: CORS headers ───────────────────────────────────────────
 # This test checks if the server was NOT started with --cors, headers should be absent.
 # A full CORS test would require restarting the server with --cors flag.

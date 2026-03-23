@@ -61,6 +61,9 @@ struct MLXServer: AsyncParsableCommand {
     @Flag(name: .long, help: "Enable VLM (vision-language model) mode for image inputs")
     var vision: Bool = false
 
+    @Option(name: .long, help: "GPU memory limit in MB (default: system limit)")
+    var memLimit: Int?
+
     @Option(name: .long, help: "Allowed CORS origin (* for all, or a specific origin URL)")
     var cors: String?
 
@@ -120,13 +123,25 @@ struct MLXServer: AsyncParsableCommand {
         let parallelSlots = self.parallel
         let corsOrigin = self.cors
 
+        // ── Memory limit enforcement ──
+        if let memLimitMB = self.memLimit {
+            let bytes = memLimitMB * 1024 * 1024
+            Memory.memoryLimit = bytes
+            Memory.cacheLimit = bytes
+            print("[mlx-server] Memory limit set to \(memLimitMB)MB")
+        }
+
         // ── Concurrency limiter ──
         let semaphore = AsyncSemaphore(limit: parallelSlots)
+
+        // ── Server stats tracker ──
+        let stats = ServerStats()
 
         let ctxSizeStr = config.ctxSize.map { String($0) } ?? "model_default"
         let penaltyStr = config.repeatPenalty.map { String($0) } ?? "disabled"
         let corsStr = corsOrigin ?? "disabled"
-        print("[mlx-server] Config: ctx_size=\(ctxSizeStr), temp=\(config.temp), top_p=\(config.topP), repeat_penalty=\(penaltyStr), parallel=\(parallelSlots), cors=\(corsStr)")
+        let memLimitStr = self.memLimit.map { "\($0)MB" } ?? "system_default"
+        print("[mlx-server] Config: ctx_size=\(ctxSizeStr), temp=\(config.temp), top_p=\(config.topP), repeat_penalty=\(penaltyStr), parallel=\(parallelSlots), cors=\(corsStr), mem_limit=\(memLimitStr)")
 
         // ── Build Hummingbird router ──
         let router = Router()
@@ -136,9 +151,17 @@ struct MLXServer: AsyncParsableCommand {
             router.add(middleware: CORSMiddleware(allowedOrigin: origin))
         }
 
-        // Health
+        // Health (enhanced v2 with memory + stats)
         router.get("/health") { _, _ -> Response in
-            let payload = "{\"status\":\"ok\",\"model\":\"\(modelId)\"}"
+            let activeMemMB = Memory.activeMemory / (1024 * 1024)
+            let peakMemMB = Memory.peakMemory / (1024 * 1024)
+            let cacheMemMB = Memory.cacheMemory / (1024 * 1024)
+            let deviceInfo = GPU.deviceInfo()
+            let totalMemMB = deviceInfo.memorySize / (1024 * 1024)
+            let snapshot = await stats.snapshot()
+            let payload = """
+{"status":"ok","model":"\(modelId)","vision":\(isVision),"memory":{"active_mb":\(activeMemMB),"peak_mb":\(peakMemMB),"cache_mb":\(cacheMemMB),"total_system_mb":\(totalMemMB),"gpu_architecture":"\(deviceInfo.architecture)"},"stats":{"requests_total":\(snapshot.requestsTotal),"requests_active":\(snapshot.requestsActive),"tokens_generated":\(snapshot.tokensGenerated),"avg_tokens_per_sec":\(String(format: "%.2f", snapshot.avgTokensPerSec))}}
+"""
             return Response(
                 status: .ok,
                 headers: jsonHeaders(),
@@ -162,7 +185,7 @@ struct MLXServer: AsyncParsableCommand {
         router.post("/v1/chat/completions") { request, _ -> Response in
             let bodyData = try await collectBody(request)
             return try await handleChatCompletion(
-                bodyData: bodyData, config: config, container: container, semaphore: semaphore
+                bodyData: bodyData, config: config, container: container, semaphore: semaphore, stats: stats
             )
         }
 
@@ -170,7 +193,48 @@ struct MLXServer: AsyncParsableCommand {
         router.post("/v1/completions") { request, _ -> Response in
             let bodyData = try await collectBody(request)
             return try await handleTextCompletion(
-                bodyData: bodyData, config: config, container: container, semaphore: semaphore
+                bodyData: bodyData, config: config, container: container, semaphore: semaphore, stats: stats
+            )
+        }
+
+        // Prometheus-compatible metrics endpoint
+        router.get("/metrics") { _, _ -> Response in
+            let activeMemBytes = Memory.activeMemory
+            let peakMemBytes = Memory.peakMemory
+            let cacheMemBytes = Memory.cacheMemory
+            let snapshot = await stats.snapshot()
+            let uptime = snapshot.uptimeSeconds
+            var lines: [String] = []
+            lines.append("# HELP mlx_server_requests_total Total requests processed")
+            lines.append("# TYPE mlx_server_requests_total counter")
+            lines.append("mlx_server_requests_total \(snapshot.requestsTotal)")
+            lines.append("# HELP mlx_server_requests_active Currently active requests")
+            lines.append("# TYPE mlx_server_requests_active gauge")
+            lines.append("mlx_server_requests_active \(snapshot.requestsActive)")
+            lines.append("# HELP mlx_server_tokens_generated_total Total tokens generated")
+            lines.append("# TYPE mlx_server_tokens_generated_total counter")
+            lines.append("mlx_server_tokens_generated_total \(snapshot.tokensGenerated)")
+            lines.append("# HELP mlx_server_tokens_per_second Average token generation rate")
+            lines.append("# TYPE mlx_server_tokens_per_second gauge")
+            lines.append("mlx_server_tokens_per_second \(String(format: "%.2f", snapshot.avgTokensPerSec))")
+            lines.append("# HELP mlx_server_memory_active_bytes Active GPU memory usage")
+            lines.append("# TYPE mlx_server_memory_active_bytes gauge")
+            lines.append("mlx_server_memory_active_bytes \(activeMemBytes)")
+            lines.append("# HELP mlx_server_memory_peak_bytes Peak GPU memory usage")
+            lines.append("# TYPE mlx_server_memory_peak_bytes gauge")
+            lines.append("mlx_server_memory_peak_bytes \(peakMemBytes)")
+            lines.append("# HELP mlx_server_memory_cache_bytes Cached GPU memory")
+            lines.append("# TYPE mlx_server_memory_cache_bytes gauge")
+            lines.append("mlx_server_memory_cache_bytes \(cacheMemBytes)")
+            lines.append("# HELP mlx_server_uptime_seconds Server uptime")
+            lines.append("# TYPE mlx_server_uptime_seconds gauge")
+            lines.append("mlx_server_uptime_seconds \(String(format: "%.0f", uptime))")
+            lines.append("")
+            let metrics = lines.joined(separator: "\n")
+            return Response(
+                status: .ok,
+                headers: HTTPFields([HTTPField(name: .contentType, value: "text/plain; version=0.0.4; charset=utf-8")]),
+                body: .init(byteBuffer: ByteBuffer(string: metrics))
             )
         }
 
@@ -196,6 +260,23 @@ struct MLXServer: AsyncParsableCommand {
             fflush(stdout)
         }
 
+        // ── Graceful shutdown on SIGTERM/SIGINT ──
+        let shutdownSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        let interruptSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+        signal(SIGTERM, SIG_IGN)
+        signal(SIGINT, SIG_IGN)
+
+        shutdownSource.setEventHandler {
+            print("\n[mlx-server] Received SIGTERM, shutting down gracefully...")
+            Darwin.exit(0)
+        }
+        interruptSource.setEventHandler {
+            print("\n[mlx-server] Received SIGINT, shutting down gracefully...")
+            Darwin.exit(0)
+        }
+        shutdownSource.resume()
+        interruptSource.resume()
+
         try await app.runService()
     }
 }
@@ -213,6 +294,46 @@ struct ServerConfig: Sendable {
     let isVision: Bool
 }
 
+// ── Server Stats Tracker ───────────────────────────────────────────────────────
+
+actor ServerStats {
+    private var requestsTotal: Int = 0
+    private var requestsActive: Int = 0
+    private var tokensGenerated: Int = 0
+    private var totalGenerationTimeSeconds: Double = 0
+    private let startTime = Date()
+
+    struct Snapshot: Sendable {
+        let requestsTotal: Int
+        let requestsActive: Int
+        let tokensGenerated: Int
+        let avgTokensPerSec: Double
+        let uptimeSeconds: TimeInterval
+    }
+
+    func requestStarted() {
+        requestsTotal += 1
+        requestsActive += 1
+    }
+
+    func requestFinished(tokens: Int, duration: TimeInterval) {
+        requestsActive -= 1
+        tokensGenerated += tokens
+        totalGenerationTimeSeconds += duration
+    }
+
+    func snapshot() -> Snapshot {
+        let tps = totalGenerationTimeSeconds > 0 ? Double(tokensGenerated) / totalGenerationTimeSeconds : 0
+        return Snapshot(
+            requestsTotal: requestsTotal,
+            requestsActive: requestsActive,
+            tokensGenerated: tokensGenerated,
+            avgTokensPerSec: tps,
+            uptimeSeconds: Date().timeIntervalSince(startTime)
+        )
+    }
+}
+
 // ── Request Body Extraction ──────────────────────────────────────────────────
 
 func collectBody(_ request: Request) async throws -> Data {
@@ -227,7 +348,8 @@ func handleChatCompletion(
     bodyData: Data,
     config: ServerConfig,
     container: ModelContainer,
-    semaphore: AsyncSemaphore
+    semaphore: AsyncSemaphore,
+    stats: ServerStats
 ) async throws -> Response {
     let chatReq = try JSONDecoder().decode(ChatCompletionRequest.self, from: bodyData)
     let isStream = chatReq.stream ?? false
@@ -294,6 +416,8 @@ func handleChatCompletion(
 
     // ── Acquire slot (concurrency limiter) ──
     await semaphore.wait()
+    await stats.requestStarted()
+    let genStart = Date()
 
     // Pass enable_thinking to the Jinja chat template via additionalContext
     let templateContext: [String: any Sendable]? = config.thinking ? nil : ["enable_thinking": false]
@@ -311,12 +435,12 @@ func handleChatCompletion(
         return handleChatStreaming(
             stream: stream, modelId: modelId, stopSequences: stopSequences,
             includeUsage: includeUsage, promptTokenCount: promptTokenCount,
-            jsonMode: jsonMode, semaphore: semaphore
+            jsonMode: jsonMode, semaphore: semaphore, stats: stats, genStart: genStart
         )
     } else {
         return try await handleChatNonStreaming(
             stream: stream, modelId: modelId, stopSequences: stopSequences,
-            promptTokenCount: promptTokenCount, jsonMode: jsonMode, semaphore: semaphore
+            promptTokenCount: promptTokenCount, jsonMode: jsonMode, semaphore: semaphore, stats: stats, genStart: genStart
         )
     }
 }
@@ -330,7 +454,9 @@ func handleChatStreaming(
     includeUsage: Bool,
     promptTokenCount: Int,
     jsonMode: Bool = false,
-    semaphore: AsyncSemaphore
+    semaphore: AsyncSemaphore,
+    stats: ServerStats,
+    genStart: Date
 ) -> Response {
     let (sseStream, cont) = AsyncStream<String>.makeStream()
     Task {
@@ -380,6 +506,8 @@ func handleChatStreaming(
             }
         }
         cont.finish()
+        let duration = Date().timeIntervalSince(genStart)
+        await stats.requestFinished(tokens: completionTokenCount, duration: duration)
         await semaphore.signal()
     }
     return Response(
@@ -397,7 +525,9 @@ func handleChatNonStreaming(
     stopSequences: [String],
     promptTokenCount: Int,
     jsonMode: Bool = false,
-    semaphore: AsyncSemaphore
+    semaphore: AsyncSemaphore,
+    stats: ServerStats,
+    genStart: Date
 ) async throws -> Response {
     var fullText = ""
     var completionTokenCount = 0
@@ -420,6 +550,8 @@ func handleChatNonStreaming(
             break
         }
     }
+    let duration = Date().timeIntervalSince(genStart)
+    await stats.requestFinished(tokens: completionTokenCount, duration: duration)
     await semaphore.signal()
 
     // ── Apply stop sequences to final text ──
@@ -475,7 +607,8 @@ func handleTextCompletion(
     bodyData: Data,
     config: ServerConfig,
     container: ModelContainer,
-    semaphore: AsyncSemaphore
+    semaphore: AsyncSemaphore,
+    stats: ServerStats
 ) async throws -> Response {
     let compReq = try JSONDecoder().decode(TextCompletionRequest.self, from: bodyData)
     let isStream = compReq.stream ?? false
@@ -499,6 +632,8 @@ func handleTextCompletion(
     }
 
     await semaphore.wait()
+    await stats.requestStarted()
+    let genStart = Date()
 
     let userInput = UserInput(prompt: compReq.prompt)
     let lmInput = try await container.prepare(input: userInput)
@@ -511,12 +646,13 @@ func handleTextCompletion(
 
     if isStream {
         return handleTextStreaming(
-            stream: stream, modelId: modelId, stopSequences: stopSequences, semaphore: semaphore
+            stream: stream, modelId: modelId, stopSequences: stopSequences,
+            semaphore: semaphore, stats: stats, genStart: genStart
         )
     } else {
         return try await handleTextNonStreaming(
             stream: stream, modelId: modelId, stopSequences: stopSequences,
-            promptTokenCount: promptTokenCount, semaphore: semaphore
+            promptTokenCount: promptTokenCount, semaphore: semaphore, stats: stats, genStart: genStart
         )
     }
 }
@@ -527,7 +663,9 @@ func handleTextStreaming(
     stream: AsyncStream<Generation>,
     modelId: String,
     stopSequences: [String],
-    semaphore: AsyncSemaphore
+    semaphore: AsyncSemaphore,
+    stats: ServerStats,
+    genStart: Date
 ) -> Response {
     let (sseStream, cont) = AsyncStream<String>.makeStream()
     Task {
@@ -564,6 +702,8 @@ func handleTextStreaming(
             }
         }
         cont.finish()
+        let duration = Date().timeIntervalSince(genStart)
+        await stats.requestFinished(tokens: completionTokenCount, duration: duration)
         await semaphore.signal()
     }
     return Response(
@@ -580,7 +720,9 @@ func handleTextNonStreaming(
     modelId: String,
     stopSequences: [String],
     promptTokenCount: Int,
-    semaphore: AsyncSemaphore
+    semaphore: AsyncSemaphore,
+    stats: ServerStats,
+    genStart: Date
 ) async throws -> Response {
     var fullText = ""
     var completionTokenCount = 0
@@ -593,6 +735,8 @@ func handleTextNonStreaming(
             break
         }
     }
+    let duration = Date().timeIntervalSince(genStart)
+    await stats.requestFinished(tokens: completionTokenCount, duration: duration)
     await semaphore.signal()
 
     var finishReason = "stop"
