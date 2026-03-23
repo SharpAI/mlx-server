@@ -4,6 +4,7 @@
 //   GET  /health                    → { "status": "ok", "model": "<id>" }
 //   GET  /v1/models                 → OpenAI-style model list
 //   POST /v1/chat/completions       → OpenAI Chat Completions (streaming + non-streaming)
+//   POST /v1/completions            → OpenAI Text Completions (streaming + non-streaming)
 //
 // Usage:
 //   mlx-server --model mlx-community/Qwen2.5-3B-Instruct-4bit --port 5413
@@ -12,6 +13,7 @@ import ArgumentParser
 import Foundation
 import HTTPTypes
 import Hummingbird
+import MLX
 import MLXLLM
 import MLXLMCommon
 
@@ -54,13 +56,14 @@ struct MLXServer: AsyncParsableCommand {
     @Flag(name: .long, help: "Enable thinking/reasoning mode (Qwen3.5 etc). Default: disabled")
     var thinking: Bool = false
 
+    @Option(name: .long, help: "Allowed CORS origin (* for all, or a specific origin URL)")
+    var cors: String?
+
     mutating func run() async throws {
         print("[mlx-server] Loading model: \(model)")
         let modelId = model
 
         // ── Load model ──
-        // Auto-detect: if --model points to an existing local directory, load
-        // from disk directly (no download). Otherwise treat as HF repo ID.
         let modelConfig: ModelConfiguration
         let fileManager = FileManager.default
         if fileManager.fileExists(atPath: modelId) {
@@ -85,24 +88,35 @@ struct MLXServer: AsyncParsableCommand {
 
         print("[mlx-server] Model loaded. Starting HTTP server on \(host):\(port)")
 
-        // ── Capture CLI defaults ──
-        let defaultMaxTokens = self.maxTokens
-        let defaultCtxSize = self.ctxSize
-        let defaultTemp = self.temp
-        let defaultTopP = self.topP
-        let defaultRepeatPenalty = self.repeatPenalty
-        let thinkingEnabled = self.thinking
+        // ── Capture CLI defaults into a shared config ──
+        let config = ServerConfig(
+            modelId: modelId,
+            maxTokens: self.maxTokens,
+            ctxSize: self.ctxSize,
+            temp: self.temp,
+            topP: self.topP,
+            repeatPenalty: self.repeatPenalty,
+            thinking: self.thinking
+        )
+
         let parallelSlots = self.parallel
+        let corsOrigin = self.cors
 
         // ── Concurrency limiter ──
         let semaphore = AsyncSemaphore(limit: parallelSlots)
 
-        let ctxSizeStr = defaultCtxSize.map { String($0) } ?? "model_default"
-        let penaltyStr = defaultRepeatPenalty.map { String($0) } ?? "disabled"
-        print("[mlx-server] Config: ctx_size=\(ctxSizeStr), temp=\(defaultTemp), top_p=\(defaultTopP), repeat_penalty=\(penaltyStr), parallel=\(parallelSlots)")
+        let ctxSizeStr = config.ctxSize.map { String($0) } ?? "model_default"
+        let penaltyStr = config.repeatPenalty.map { String($0) } ?? "disabled"
+        let corsStr = corsOrigin ?? "disabled"
+        print("[mlx-server] Config: ctx_size=\(ctxSizeStr), temp=\(config.temp), top_p=\(config.topP), repeat_penalty=\(penaltyStr), parallel=\(parallelSlots), cors=\(corsStr)")
 
         // ── Build Hummingbird router ──
         let router = Router()
+
+        // ── CORS middleware ──
+        if let origin = corsOrigin {
+            router.add(middleware: CORSMiddleware(allowedOrigin: origin))
+        }
 
         // Health
         router.get("/health") { _, _ -> Response in
@@ -126,145 +140,20 @@ struct MLXServer: AsyncParsableCommand {
             )
         }
 
-        // Chat completions
+        // Chat completions — handler extracted to avoid type-checker timeout
         router.post("/v1/chat/completions") { request, _ -> Response in
-            var bodyBuffer = try await request.body.collect(upTo: 10 * 1024 * 1024)
-            let bodyBytes = bodyBuffer.readBytes(length: bodyBuffer.readableBytes) ?? []
-            let bodyData = Data(bodyBytes)
-
-            let chatReq = try JSONDecoder().decode(ChatCompletionRequest.self, from: bodyData)
-            let isStream = chatReq.stream ?? false
-
-            // ── Merge per-request overrides with CLI defaults ──
-            let tokenLimit = chatReq.maxTokens ?? defaultMaxTokens
-            let temperature = chatReq.temperature.map(Float.init) ?? defaultTemp
-            let topP = chatReq.topP.map(Float.init) ?? defaultTopP
-            let repeatPenalty = chatReq.repetitionPenalty.map(Float.init) ?? defaultRepeatPenalty
-
-            let params = GenerateParameters(
-                maxTokens: tokenLimit,
-                maxKVSize: defaultCtxSize,
-                temperature: temperature,
-                topP: topP,
-                repetitionPenalty: repeatPenalty
+            let bodyData = try await collectBody(request)
+            return try await handleChatCompletion(
+                bodyData: bodyData, config: config, container: container, semaphore: semaphore
             )
+        }
 
-            // Convert request messages → Chat.Message
-            let chatMessages: [Chat.Message] = chatReq.messages.compactMap { msg in
-                switch msg.role {
-                case "system":    return .system(msg.content)
-                case "assistant": return .assistant(msg.content)
-                default:          return .user(msg.content)
-                }
-            }
-
-            // Convert OpenAI tools format → [String: any Sendable] for UserInput
-            let toolSpecs: [[String: any Sendable]]? = chatReq.tools?.map { tool in
-                var spec: [String: any Sendable] = ["type": tool.type]
-                var fn: [String: any Sendable] = ["name": tool.function.name]
-                if let desc = tool.function.description { fn["description"] = desc }
-                if let params = tool.function.parameters {
-                    fn["parameters"] = params.mapValues { $0.value }
-                }
-                spec["function"] = fn
-                return spec
-            }
-
-            // ── Acquire slot (concurrency limiter) ──
-            await semaphore.wait()
-
-            // Pass enable_thinking to the Jinja chat template via additionalContext
-            // (mirrors llama-server's --chat-template-kwargs '{"enable_thinking":false}')
-            let templateContext: [String: any Sendable]? = thinkingEnabled ? nil : ["enable_thinking": false]
-            let userInput = UserInput(chat: chatMessages, tools: toolSpecs, additionalContext: templateContext)
-            let lmInput = try await container.prepare(input: userInput)
-            let stream = try await container.generate(input: lmInput, parameters: params)
-
-            if isStream {
-                // SSE streaming
-                let (sseStream, cont) = AsyncStream<String>.makeStream()
-                Task {
-                    var hasToolCalls = false
-                    var toolCallIndex = 0
-                    for await generation in stream {
-                        switch generation {
-                        case .chunk(let text):
-                            cont.yield(sseChunk(modelId: modelId, delta: text, finishReason: nil))
-                        case .toolCall(let tc):
-                            hasToolCalls = true
-                            let argsJson = serializeToolCallArgs(tc.function.arguments)
-                            cont.yield(sseToolCallChunk(modelId: modelId, index: toolCallIndex, name: tc.function.name, arguments: argsJson))
-                            toolCallIndex += 1
-                        case .info:
-                            let reason = hasToolCalls ? "tool_calls" : "stop"
-                            cont.yield(sseChunk(modelId: modelId, delta: "", finishReason: reason))
-                            cont.yield("data: [DONE]\n\n")
-                            cont.finish()
-                        }
-                    }
-                    cont.finish()
-                    await semaphore.signal()
-                }
-                return Response(
-                    status: .ok,
-                    headers: sseHeaders(),
-                    body: .init(asyncSequence: sseStream.map { ByteBuffer(string: $0) })
-                )
-            } else {
-                // Non-streaming: collect all chunks and tool calls
-                var fullText = ""
-                var completionTokenCount = 0
-                var collectedToolCalls: [ToolCallResponse] = []
-                var tcIndex = 0
-                for await generation in stream {
-                    switch generation {
-                    case .chunk(let text):
-                        fullText += text
-                        completionTokenCount += 1
-                    case .toolCall(let tc):
-                        let argsJson = serializeToolCallArgs(tc.function.arguments)
-                        collectedToolCalls.append(ToolCallResponse(
-                            id: "call_\(UUID().uuidString.prefix(8))",
-                            type: "function",
-                            function: ToolCallFunction(name: tc.function.name, arguments: argsJson)
-                        ))
-                        tcIndex += 1
-                    case .info:
-                        break
-                    }
-                }
-                await semaphore.signal()
-
-                // Approximate prompt tokens (chars / 4 is a reasonable heuristic for most tokenizers)
-                let promptText = chatReq.messages.map { $0.content }.joined(separator: " ")
-                let estimatedPromptTokens = max(1, promptText.count / 4)
-                let totalTokens = estimatedPromptTokens + completionTokenCount
-
-                let hasToolCalls = !collectedToolCalls.isEmpty
-                let resp = ChatCompletionResponse(
-                    id: "chatcmpl-\(UUID().uuidString)",
-                    model: modelId,
-                    created: Int(Date().timeIntervalSince1970),
-                    choices: [
-                        Choice(
-                            index: 0,
-                            message: AssistantMessage(
-                                role: "assistant",
-                                content: fullText.isEmpty && hasToolCalls ? nil : fullText,
-                                toolCalls: hasToolCalls ? collectedToolCalls : nil
-                            ),
-                            finishReason: hasToolCalls ? "tool_calls" : "stop"
-                        )
-                    ],
-                    usage: TokenUsage(promptTokens: estimatedPromptTokens, completionTokens: completionTokenCount, totalTokens: totalTokens)
-                )
-                let encoded = try JSONEncoder().encode(resp)
-                return Response(
-                    status: .ok,
-                    headers: jsonHeaders(),
-                    body: .init(byteBuffer: ByteBuffer(data: encoded))
-                )
-            }
+        // Text completions — handler extracted to avoid type-checker timeout
+        router.post("/v1/completions") { request, _ -> Response in
+            let bodyData = try await collectBody(request)
+            return try await handleTextCompletion(
+                bodyData: bodyData, config: config, container: container, semaphore: semaphore
+            )
         }
 
         // ── Start server ──
@@ -289,12 +178,394 @@ struct MLXServer: AsyncParsableCommand {
             fflush(stdout)
         }
 
-        // ── Handle SIGTERM/SIGINT for graceful shutdown ──
-        // Note: C signal handlers can't safely do complex I/O.
-        // Aegis detects process exit and fires onEngineStopped() automatically.
-
         try await app.runService()
     }
+}
+
+// ── Server Config ────────────────────────────────────────────────────────────
+
+struct ServerConfig: Sendable {
+    let modelId: String
+    let maxTokens: Int
+    let ctxSize: Int?
+    let temp: Float
+    let topP: Float
+    let repeatPenalty: Float?
+    let thinking: Bool
+}
+
+// ── Request Body Extraction ──────────────────────────────────────────────────
+
+func collectBody(_ request: Request) async throws -> Data {
+    var bodyBuffer = try await request.body.collect(upTo: 10 * 1024 * 1024)
+    let bodyBytes = bodyBuffer.readBytes(length: bodyBuffer.readableBytes) ?? []
+    return Data(bodyBytes)
+}
+
+// ── Chat Completions Handler ─────────────────────────────────────────────────
+
+func handleChatCompletion(
+    bodyData: Data,
+    config: ServerConfig,
+    container: ModelContainer,
+    semaphore: AsyncSemaphore
+) async throws -> Response {
+    let chatReq = try JSONDecoder().decode(ChatCompletionRequest.self, from: bodyData)
+    let isStream = chatReq.stream ?? false
+
+    // ── Merge per-request overrides with CLI defaults ──
+    let tokenLimit = chatReq.maxTokens ?? config.maxTokens
+    let temperature = chatReq.temperature.map(Float.init) ?? config.temp
+    let topP = chatReq.topP.map(Float.init) ?? config.topP
+    let repeatPenalty = chatReq.repetitionPenalty.map(Float.init) ?? config.repeatPenalty
+    let stopSequences = chatReq.stop ?? []
+    let includeUsage = chatReq.streamOptions?.includeUsage ?? false
+
+    let params = GenerateParameters(
+        maxTokens: tokenLimit,
+        maxKVSize: config.ctxSize,
+        temperature: temperature,
+        topP: topP,
+        repetitionPenalty: repeatPenalty
+    )
+
+    // ── Seed for deterministic generation ──
+    if let seed = chatReq.seed {
+        MLXRandom.seed(UInt64(seed))
+    }
+
+    // Convert request messages → Chat.Message
+    let chatMessages: [Chat.Message] = chatReq.messages.compactMap { msg in
+        switch msg.role {
+        case "system":    return .system(msg.content)
+        case "assistant": return .assistant(msg.content)
+        default:          return .user(msg.content)
+        }
+    }
+
+    // Convert OpenAI tools format → [String: any Sendable] for UserInput
+    let toolSpecs: [[String: any Sendable]]? = chatReq.tools?.map { tool in
+        var spec: [String: any Sendable] = ["type": tool.type]
+        var fn: [String: any Sendable] = ["name": tool.function.name]
+        if let desc = tool.function.description { fn["description"] = desc }
+        if let params = tool.function.parameters {
+            fn["parameters"] = params.mapValues { $0.value }
+        }
+        spec["function"] = fn
+        return spec
+    }
+
+    // ── Acquire slot (concurrency limiter) ──
+    await semaphore.wait()
+
+    // Pass enable_thinking to the Jinja chat template via additionalContext
+    let templateContext: [String: any Sendable]? = config.thinking ? nil : ["enable_thinking": false]
+    let userInput = UserInput(chat: chatMessages, tools: toolSpecs, additionalContext: templateContext)
+    let lmInput = try await container.prepare(input: userInput)
+
+    // ── Get actual prompt token count before generate() to avoid data race ──
+    let promptTokenCount = lmInput.text.tokens.size
+
+    let stream = try await container.generate(input: lmInput, parameters: params)
+
+    let modelId = config.modelId
+
+    if isStream {
+        return handleChatStreaming(
+            stream: stream, modelId: modelId, stopSequences: stopSequences,
+            includeUsage: includeUsage, promptTokenCount: promptTokenCount, semaphore: semaphore
+        )
+    } else {
+        return try await handleChatNonStreaming(
+            stream: stream, modelId: modelId, stopSequences: stopSequences,
+            promptTokenCount: promptTokenCount, semaphore: semaphore
+        )
+    }
+}
+
+// ── Chat Streaming ───────────────────────────────────────────────────────────
+
+func handleChatStreaming(
+    stream: AsyncStream<Generation>,
+    modelId: String,
+    stopSequences: [String],
+    includeUsage: Bool,
+    promptTokenCount: Int,
+    semaphore: AsyncSemaphore
+) -> Response {
+    let (sseStream, cont) = AsyncStream<String>.makeStream()
+    Task {
+        var hasToolCalls = false
+        var toolCallIndex = 0
+        var completionTokenCount = 0
+        var fullText = ""
+        var stopped = false
+        for await generation in stream {
+            if stopped { break }
+            switch generation {
+            case .chunk(let text):
+                completionTokenCount += 1
+                fullText += text
+                // ── Stop sequence check ──
+                if let (trimmedText, _) = checkStopSequences(fullText, stopSequences: stopSequences) {
+                    let emittedSoFar = fullText.count - text.count
+                    if trimmedText.count > emittedSoFar {
+                        let partialText = String(trimmedText.suffix(trimmedText.count - emittedSoFar))
+                        cont.yield(sseChunk(modelId: modelId, delta: partialText, finishReason: nil))
+                    }
+                    cont.yield(sseChunk(modelId: modelId, delta: "", finishReason: "stop"))
+                    if includeUsage {
+                        cont.yield(sseUsageChunk(modelId: modelId, promptTokens: promptTokenCount, completionTokens: completionTokenCount))
+                    }
+                    cont.yield("data: [DONE]\n\n")
+                    cont.finish()
+                    stopped = true
+                } else {
+                    cont.yield(sseChunk(modelId: modelId, delta: text, finishReason: nil))
+                }
+            case .toolCall(let tc):
+                hasToolCalls = true
+                let argsJson = serializeToolCallArgs(tc.function.arguments)
+                cont.yield(sseToolCallChunk(modelId: modelId, index: toolCallIndex, name: tc.function.name, arguments: argsJson))
+                toolCallIndex += 1
+            case .info:
+                if !stopped {
+                    let reason = hasToolCalls ? "tool_calls" : "stop"
+                    cont.yield(sseChunk(modelId: modelId, delta: "", finishReason: reason))
+                    if includeUsage {
+                        cont.yield(sseUsageChunk(modelId: modelId, promptTokens: promptTokenCount, completionTokens: completionTokenCount))
+                    }
+                    cont.yield("data: [DONE]\n\n")
+                    cont.finish()
+                }
+            }
+        }
+        cont.finish()
+        await semaphore.signal()
+    }
+    return Response(
+        status: .ok,
+        headers: sseHeaders(),
+        body: .init(asyncSequence: sseStream.map { ByteBuffer(string: $0) })
+    )
+}
+
+// ── Chat Non-Streaming ───────────────────────────────────────────────────────
+
+func handleChatNonStreaming(
+    stream: AsyncStream<Generation>,
+    modelId: String,
+    stopSequences: [String],
+    promptTokenCount: Int,
+    semaphore: AsyncSemaphore
+) async throws -> Response {
+    var fullText = ""
+    var completionTokenCount = 0
+    var collectedToolCalls: [ToolCallResponse] = []
+    var tcIndex = 0
+    for await generation in stream {
+        switch generation {
+        case .chunk(let text):
+            fullText += text
+            completionTokenCount += 1
+        case .toolCall(let tc):
+            let argsJson = serializeToolCallArgs(tc.function.arguments)
+            collectedToolCalls.append(ToolCallResponse(
+                id: "call_\(UUID().uuidString.prefix(8))",
+                type: "function",
+                function: ToolCallFunction(name: tc.function.name, arguments: argsJson)
+            ))
+            tcIndex += 1
+        case .info:
+            break
+        }
+    }
+    await semaphore.signal()
+
+    // ── Apply stop sequences to final text ──
+    var finishReason = "stop"
+    if let (trimmedText, _) = checkStopSequences(fullText, stopSequences: stopSequences) {
+        fullText = trimmedText
+        finishReason = "stop"
+    }
+
+    let totalTokens = promptTokenCount + completionTokenCount
+    let hasToolCalls = !collectedToolCalls.isEmpty
+
+    let resp = ChatCompletionResponse(
+        id: "chatcmpl-\(UUID().uuidString)",
+        model: modelId,
+        created: Int(Date().timeIntervalSince1970),
+        choices: [
+            Choice(
+                index: 0,
+                message: AssistantMessage(
+                    role: "assistant",
+                    content: fullText.isEmpty && hasToolCalls ? nil : fullText,
+                    toolCalls: hasToolCalls ? collectedToolCalls : nil
+                ),
+                finishReason: hasToolCalls ? "tool_calls" : finishReason
+            )
+        ],
+        usage: TokenUsage(promptTokens: promptTokenCount, completionTokens: completionTokenCount, totalTokens: totalTokens)
+    )
+    let encoded = try JSONEncoder().encode(resp)
+    return Response(
+        status: .ok,
+        headers: jsonHeaders(),
+        body: .init(byteBuffer: ByteBuffer(data: encoded))
+    )
+}
+
+// ── Text Completions Handler ─────────────────────────────────────────────────
+
+func handleTextCompletion(
+    bodyData: Data,
+    config: ServerConfig,
+    container: ModelContainer,
+    semaphore: AsyncSemaphore
+) async throws -> Response {
+    let compReq = try JSONDecoder().decode(TextCompletionRequest.self, from: bodyData)
+    let isStream = compReq.stream ?? false
+
+    let tokenLimit = compReq.maxTokens ?? config.maxTokens
+    let temperature = compReq.temperature.map(Float.init) ?? config.temp
+    let topP = compReq.topP.map(Float.init) ?? config.topP
+    let repeatPenalty = compReq.repetitionPenalty.map(Float.init) ?? config.repeatPenalty
+    let stopSequences = compReq.stop ?? []
+
+    let params = GenerateParameters(
+        maxTokens: tokenLimit,
+        maxKVSize: config.ctxSize,
+        temperature: temperature,
+        topP: topP,
+        repetitionPenalty: repeatPenalty
+    )
+
+    if let seed = compReq.seed {
+        MLXRandom.seed(UInt64(seed))
+    }
+
+    await semaphore.wait()
+
+    let userInput = UserInput(prompt: compReq.prompt)
+    let lmInput = try await container.prepare(input: userInput)
+
+    // ── Get actual prompt token count before generate() to avoid data race ──
+    let promptTokenCount = lmInput.text.tokens.size
+
+    let stream = try await container.generate(input: lmInput, parameters: params)
+    let modelId = config.modelId
+
+    if isStream {
+        return handleTextStreaming(
+            stream: stream, modelId: modelId, stopSequences: stopSequences, semaphore: semaphore
+        )
+    } else {
+        return try await handleTextNonStreaming(
+            stream: stream, modelId: modelId, stopSequences: stopSequences,
+            promptTokenCount: promptTokenCount, semaphore: semaphore
+        )
+    }
+}
+
+// ── Text Streaming ───────────────────────────────────────────────────────────
+
+func handleTextStreaming(
+    stream: AsyncStream<Generation>,
+    modelId: String,
+    stopSequences: [String],
+    semaphore: AsyncSemaphore
+) -> Response {
+    let (sseStream, cont) = AsyncStream<String>.makeStream()
+    Task {
+        var completionTokenCount = 0
+        var fullText = ""
+        var stopped = false
+        for await generation in stream {
+            if stopped { break }
+            switch generation {
+            case .chunk(let text):
+                completionTokenCount += 1
+                fullText += text
+                if let (trimmedText, _) = checkStopSequences(fullText, stopSequences: stopSequences) {
+                    let emittedSoFar = fullText.count - text.count
+                    if trimmedText.count > emittedSoFar {
+                        let partialText = String(trimmedText.suffix(trimmedText.count - emittedSoFar))
+                        cont.yield(sseTextChunk(modelId: modelId, text: partialText, finishReason: nil))
+                    }
+                    cont.yield(sseTextChunk(modelId: modelId, text: "", finishReason: "stop"))
+                    cont.yield("data: [DONE]\n\n")
+                    cont.finish()
+                    stopped = true
+                } else {
+                    cont.yield(sseTextChunk(modelId: modelId, text: text, finishReason: nil))
+                }
+            case .toolCall:
+                break
+            case .info:
+                if !stopped {
+                    cont.yield(sseTextChunk(modelId: modelId, text: "", finishReason: "stop"))
+                    cont.yield("data: [DONE]\n\n")
+                    cont.finish()
+                }
+            }
+        }
+        cont.finish()
+        await semaphore.signal()
+    }
+    return Response(
+        status: .ok,
+        headers: sseHeaders(),
+        body: .init(asyncSequence: sseStream.map { ByteBuffer(string: $0) })
+    )
+}
+
+// ── Text Non-Streaming ───────────────────────────────────────────────────────
+
+func handleTextNonStreaming(
+    stream: AsyncStream<Generation>,
+    modelId: String,
+    stopSequences: [String],
+    promptTokenCount: Int,
+    semaphore: AsyncSemaphore
+) async throws -> Response {
+    var fullText = ""
+    var completionTokenCount = 0
+    for await generation in stream {
+        switch generation {
+        case .chunk(let text):
+            fullText += text
+            completionTokenCount += 1
+        case .toolCall, .info:
+            break
+        }
+    }
+    await semaphore.signal()
+
+    var finishReason = "stop"
+    if let (trimmedText, _) = checkStopSequences(fullText, stopSequences: stopSequences) {
+        fullText = trimmedText
+        finishReason = "stop"
+    }
+
+    let totalTokens = promptTokenCount + completionTokenCount
+
+    let resp = TextCompletionResponse(
+        id: "cmpl-\(UUID().uuidString)",
+        model: modelId,
+        created: Int(Date().timeIntervalSince1970),
+        choices: [
+            TextChoice(index: 0, text: fullText, finishReason: finishReason)
+        ],
+        usage: TokenUsage(promptTokens: promptTokenCount, completionTokens: completionTokenCount, totalTokens: totalTokens)
+    )
+    let encoded = try JSONEncoder().encode(resp)
+    return Response(
+        status: .ok,
+        headers: jsonHeaders(),
+        body: .init(byteBuffer: ByteBuffer(data: encoded))
+    )
 }
 
 // ── AsyncSemaphore — lightweight concurrency limiter ─────────────────────────
@@ -329,6 +600,55 @@ actor AsyncSemaphore {
     }
 }
 
+// ── CORS Middleware ───────────────────────────────────────────────────────────
+
+struct CORSMiddleware<Context: RequestContext>: RouterMiddleware {
+    let allowedOrigin: String
+
+    func handle(_ request: Request, context: Context, next: (Request, Context) async throws -> Response) async throws -> Response {
+        if request.method == .options {
+            return Response(
+                status: .noContent,
+                headers: corsHeaders(for: request)
+            )
+        }
+        var response = try await next(request, context)
+        let headers = corsHeaders(for: request)
+        for field in headers {
+            response.headers.append(field)
+        }
+        return response
+    }
+
+    private func corsHeaders(for request: Request) -> HTTPFields {
+        var fields: [HTTPField] = []
+        if allowedOrigin == "*" {
+            fields.append(HTTPField(name: HTTPField.Name("Access-Control-Allow-Origin")!, value: "*"))
+        } else {
+            let requestOrigin = request.headers[values: HTTPField.Name("Origin")!].first ?? ""
+            if requestOrigin == allowedOrigin {
+                fields.append(HTTPField(name: HTTPField.Name("Access-Control-Allow-Origin")!, value: allowedOrigin))
+                fields.append(HTTPField(name: HTTPField.Name("Vary")!, value: "Origin"))
+            }
+        }
+        fields.append(HTTPField(name: HTTPField.Name("Access-Control-Allow-Methods")!, value: "GET, POST, OPTIONS"))
+        fields.append(HTTPField(name: HTTPField.Name("Access-Control-Allow-Headers")!, value: "Content-Type, Authorization"))
+        return HTTPFields(fields)
+    }
+}
+
+// ── Stop Sequence Detection ──────────────────────────────────────────────────
+
+func checkStopSequences(_ text: String, stopSequences: [String]) -> (String, String)? {
+    for stop in stopSequences {
+        if let range = text.range(of: stop) {
+            let trimmed = String(text[text.startIndex..<range.lowerBound])
+            return (trimmed, stop)
+        }
+    }
+    return nil
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 func jsonHeaders() -> HTTPFields {
@@ -348,22 +668,37 @@ func sseChunk(modelId: String, delta: String, finishReason: String?) -> String {
     if !delta.isEmpty {
         deltaObj = ["role": "assistant", "content": delta]
     }
-    var chunk: [String: Any] = [
+    var choiceObj: [String: Any] = [
+        "index": 0,
+        "delta": deltaObj,
+    ]
+    if let finishReason {
+        choiceObj["finish_reason"] = finishReason
+    }
+    let chunk: [String: Any] = [
         "id": "chatcmpl-\(UUID().uuidString)",
         "object": "chat.completion.chunk",
         "created": Int(Date().timeIntervalSince1970),
         "model": modelId,
-        "choices": [[
-            "index": 0,
-            "delta": deltaObj,
-        ] as [String: Any]]
+        "choices": [choiceObj]
     ]
-    if let finishReason {
-        if var choices = chunk["choices"] as? [[String: Any]], !choices.isEmpty {
-            choices[0]["finish_reason"] = finishReason
-            chunk["choices"] = choices
-        }
-    }
+    let data = try! JSONSerialization.data(withJSONObject: chunk)
+    return "data: \(String(data: data, encoding: .utf8)!)\n\n"
+}
+
+func sseUsageChunk(modelId: String, promptTokens: Int, completionTokens: Int) -> String {
+    let chunk: [String: Any] = [
+        "id": "chatcmpl-\(UUID().uuidString)",
+        "object": "chat.completion.chunk",
+        "created": Int(Date().timeIntervalSince1970),
+        "model": modelId,
+        "choices": [] as [[String: Any]],
+        "usage": [
+            "prompt_tokens": promptTokens,
+            "completion_tokens": completionTokens,
+            "total_tokens": promptTokens + completionTokens
+        ]
+    ]
     let data = try! JSONSerialization.data(withJSONObject: chunk)
     return "data: \(String(data: data, encoding: .utf8)!)\n\n"
 }
@@ -394,7 +729,25 @@ func sseToolCallChunk(modelId: String, index: Int, name: String, arguments: Stri
     return "data: \(String(data: data, encoding: .utf8)!)\n\n"
 }
 
-/// Serialize ToolCall arguments ([String: JSONValue]) to a JSON string
+func sseTextChunk(modelId: String, text: String, finishReason: String?) -> String {
+    var choiceObj: [String: Any] = [
+        "index": 0,
+        "text": text,
+    ]
+    if let finishReason {
+        choiceObj["finish_reason"] = finishReason
+    }
+    let chunk: [String: Any] = [
+        "id": "cmpl-\(UUID().uuidString)",
+        "object": "text_completion",
+        "created": Int(Date().timeIntervalSince1970),
+        "model": modelId,
+        "choices": [choiceObj]
+    ]
+    let data = try! JSONSerialization.data(withJSONObject: chunk)
+    return "data: \(String(data: data, encoding: .utf8)!)\n\n"
+}
+
 func serializeToolCallArgs(_ args: [String: JSONValue]) -> String {
     let anyDict = args.mapValues { $0.anyValue }
     guard let data = try? JSONSerialization.data(withJSONObject: anyDict) else {
@@ -404,6 +757,13 @@ func serializeToolCallArgs(_ args: [String: JSONValue]) -> String {
 }
 
 // ── OpenAI-compatible types ───────────────────────────────────────────────────
+
+struct StreamOptions: Decodable {
+    let includeUsage: Bool?
+    enum CodingKeys: String, CodingKey {
+        case includeUsage = "include_usage"
+    }
+}
 
 struct ChatCompletionRequest: Decodable {
     struct Message: Decodable {
@@ -427,9 +787,32 @@ struct ChatCompletionRequest: Decodable {
     let topP: Double?
     let repetitionPenalty: Double?
     let tools: [ToolDef]?
+    let stop: [String]?
+    let seed: Int?
+    let streamOptions: StreamOptions?
 
     enum CodingKeys: String, CodingKey {
-        case model, messages, stream, temperature, tools
+        case model, messages, stream, temperature, tools, stop, seed
+        case maxTokens = "max_tokens"
+        case topP = "top_p"
+        case repetitionPenalty = "repetition_penalty"
+        case streamOptions = "stream_options"
+    }
+}
+
+struct TextCompletionRequest: Decodable {
+    let model: String?
+    let prompt: String
+    let stream: Bool?
+    let maxTokens: Int?
+    let temperature: Double?
+    let topP: Double?
+    let repetitionPenalty: Double?
+    let stop: [String]?
+    let seed: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case model, prompt, stream, temperature, stop, seed
         case maxTokens = "max_tokens"
         case topP = "top_p"
         case repetitionPenalty = "repetition_penalty"
@@ -478,7 +861,26 @@ struct ToolCallFunction: Encodable {
     let arguments: String
 }
 
-/// AnyCodable: decode arbitrary JSON for tool parameters pass-through
+struct TextCompletionResponse: Encodable {
+    let id: String
+    let object: String = "text_completion"
+    let model: String
+    let created: Int
+    let choices: [TextChoice]
+    let usage: TokenUsage
+}
+
+struct TextChoice: Encodable {
+    let index: Int
+    let text: String
+    let finishReason: String
+
+    enum CodingKeys: String, CodingKey {
+        case index, text
+        case finishReason = "finish_reason"
+    }
+}
+
 struct AnyCodable: Decodable, Sendable {
     let value: Any
     init(from decoder: Decoder) throws {
@@ -492,7 +894,6 @@ struct AnyCodable: Decodable, Sendable {
         else if let d = try? c.decode([String: AnyCodable].self) { value = d.mapValues { $0.value } }
         else { value = NSNull() }
     }
-    // Convert back to [String: any Sendable] for ToolSpec usage
     static func toSendable(_ dict: [String: AnyCodable]?) -> [String: any Sendable]? {
         guard let dict else { return nil }
         return dict.mapValues { $0.value as! any Sendable }
