@@ -67,6 +67,12 @@ struct MLXServer: AsyncParsableCommand {
     @Option(name: .long, help: "API key for bearer token authentication")
     var apiKey: String?
 
+    @Flag(name: .long, help: "Profile model memory requirements and exit (dry-run)")
+    var info: Bool = false
+
+    @Option(name: .long, help: "Number of layers to run on GPU (\"auto\" or integer, default: auto)")
+    var gpuLayers: String?
+
     @Option(name: .long, help: "Allowed CORS origin (* for all, or a specific origin URL)")
     var cors: String?
 
@@ -88,6 +94,55 @@ struct MLXServer: AsyncParsableCommand {
             }
         } else {
             modelConfig = ModelConfiguration(id: modelId)
+        }
+
+        // ── Pre-load profiling ──
+        // Resolve model directory for profiling (checks HuggingFace cache)
+        let modelDirectory = resolveModelDirectory(modelId: modelId)
+        var partitionPlan: PartitionPlan?
+        if let modelDir = modelDirectory,
+           let profile = ModelProfiler.profile(modelDirectory: modelDir, modelId: modelId) {
+            let system = ModelProfiler.systemProfile()
+            let contextSize = self.ctxSize ?? 4096
+            let plan = ModelProfiler.plan(model: profile, system: system, contextSize: contextSize)
+            partitionPlan = plan
+
+            // --info mode: print report and exit
+            if self.info {
+                ModelProfiler.printReport(plan: plan, model: profile, system: system)
+                return
+            }
+
+            // Apply memory strategy
+            switch plan.strategy {
+            case .fullGPU:
+                print("[mlx-server] \(plan.strategy.emoji) Memory strategy: FULL GPU (\(String(format: "%.1f", plan.weightMemoryGB))GB model, \(String(format: "%.1f", system.availableRAMGB))GB available)")
+            case .swapAssisted:
+                Memory.cacheLimit = plan.recommendedCacheLimit
+                print("[mlx-server] \(plan.strategy.emoji) Memory strategy: SWAP-ASSISTED (\(String(format: "%.1f", plan.overcommitRatio))× overcommit, cache limited to \(plan.recommendedCacheLimit / (1024*1024))MB)")
+                for w in plan.warnings { print("[mlx-server]    \(w)") }
+            case .layerPartitioned:
+                Memory.cacheLimit = plan.recommendedCacheLimit
+                print("[mlx-server] \(plan.strategy.emoji) Memory strategy: LAYER PARTITIONED (\(plan.recommendedGPULayers)/\(plan.totalLayers) GPU layers)")
+                print("[mlx-server]    Note: GPU/CPU layer split requires --gpu-layers support (coming soon)")
+                for w in plan.warnings { print("[mlx-server]    \(w)") }
+            case .tooLarge:
+                Memory.cacheLimit = plan.recommendedCacheLimit
+                print("[mlx-server] \(plan.strategy.emoji) WARNING: Model is \(String(format: "%.1f", plan.overcommitRatio))× system RAM. Loading will be extremely slow.")
+                for w in plan.warnings { print("[mlx-server]    \(w)") }
+            }
+        } else if self.info {
+            print("[mlx-server] Model not yet downloaded. Run without --info to download first, or provide a local path.")
+            return
+        }
+
+        // --gpu-layers validation (accept now, prepare for Phase 2)
+        if let gpuLayersArg = self.gpuLayers, gpuLayersArg != "auto" {
+            if let n = Int(gpuLayersArg) {
+                print("[mlx-server] --gpu-layers \(n) requested. Note: layer-level CPU/GPU split is under development.")
+            } else {
+                print("[mlx-server] Warning: --gpu-layers must be 'auto' or an integer, got '\(gpuLayersArg)'. Using auto.")
+            }
         }
 
         let isVision = self.vision
@@ -161,7 +216,7 @@ struct MLXServer: AsyncParsableCommand {
             router.add(middleware: ApiKeyMiddleware(apiKey: key))
         }
 
-        // Health (enhanced v2 with memory + stats)
+        // Health (enhanced v3 with memory + stats + partition plan)
         router.get("/health") { _, _ -> Response in
             let activeMemMB = Memory.activeMemory / (1024 * 1024)
             let peakMemMB = Memory.peakMemory / (1024 * 1024)
@@ -169,8 +224,26 @@ struct MLXServer: AsyncParsableCommand {
             let deviceInfo = GPU.deviceInfo()
             let totalMemMB = deviceInfo.memorySize / (1024 * 1024)
             let snapshot = await stats.snapshot()
+            // Build partition info string
+            var partitionJson = ""
+            if let plan = partitionPlan {
+                let pData: [String: Any] = [
+                    "strategy": plan.strategy.rawValue,
+                    "overcommit_ratio": round(plan.overcommitRatio * 100) / 100,
+                    "model_weight_gb": round(plan.weightMemoryGB * 10) / 10,
+                    "kv_cache_gb": round(plan.kvCacheMemoryGB * 10) / 10,
+                    "total_required_gb": round(plan.totalRequiredGB * 10) / 10,
+                    "gpu_layers": plan.recommendedGPULayers,
+                    "total_layers": plan.totalLayers,
+                    "estimated_tok_s": round(plan.estimatedTokensPerSec * 10) / 10,
+                ]
+                if let pJson = try? JSONSerialization.data(withJSONObject: pData),
+                   let pStr = String(data: pJson, encoding: .utf8) {
+                    partitionJson = ",\"partition\":\(pStr)"
+                }
+            }
             let payload = """
-{"status":"ok","model":"\(modelId)","vision":\(isVision),"memory":{"active_mb":\(activeMemMB),"peak_mb":\(peakMemMB),"cache_mb":\(cacheMemMB),"total_system_mb":\(totalMemMB),"gpu_architecture":"\(deviceInfo.architecture)"},"stats":{"requests_total":\(snapshot.requestsTotal),"requests_active":\(snapshot.requestsActive),"tokens_generated":\(snapshot.tokensGenerated),"avg_tokens_per_sec":\(String(format: "%.2f", snapshot.avgTokensPerSec))}}
+{"status":"ok","model":"\(modelId)","vision":\(isVision),"memory":{"active_mb":\(activeMemMB),"peak_mb":\(peakMemMB),"cache_mb":\(cacheMemMB),"total_system_mb":\(totalMemMB),"gpu_architecture":"\(deviceInfo.architecture)"},"stats":{"requests_total":\(snapshot.requestsTotal),"requests_active":\(snapshot.requestsActive),"tokens_generated":\(snapshot.tokensGenerated),"avg_tokens_per_sec":\(String(format: "%.2f", snapshot.avgTokensPerSec))}\(partitionJson)}
 """
             return Response(
                 status: .ok,
@@ -194,18 +267,42 @@ struct MLXServer: AsyncParsableCommand {
         // Chat completions — handler extracted to avoid type-checker timeout
         let promptCache = PromptCache()
         router.post("/v1/chat/completions") { request, _ -> Response in
-            let bodyData = try await collectBody(request)
-            return try await handleChatCompletion(
-                bodyData: bodyData, config: config, container: container, semaphore: semaphore, stats: stats, promptCache: promptCache
-            )
+            do {
+                let bodyData = try await collectBody(request)
+                return try await handleChatCompletion(
+                    bodyData: bodyData, config: config, container: container, semaphore: semaphore, stats: stats, promptCache: promptCache
+                )
+            } catch {
+                let errMsg = String(describing: error).replacingOccurrences(of: "\"", with: "'")
+                let payload = """
+                {"error":{"message":"\(errMsg)","type":"server_error","code":"internal_error"}}
+                """
+                return Response(
+                    status: .internalServerError,
+                    headers: jsonHeaders(),
+                    body: .init(byteBuffer: ByteBuffer(string: payload))
+                )
+            }
         }
 
         // Text completions — handler extracted to avoid type-checker timeout
         router.post("/v1/completions") { request, _ -> Response in
-            let bodyData = try await collectBody(request)
-            return try await handleTextCompletion(
-                bodyData: bodyData, config: config, container: container, semaphore: semaphore, stats: stats
-            )
+            do {
+                let bodyData = try await collectBody(request)
+                return try await handleTextCompletion(
+                    bodyData: bodyData, config: config, container: container, semaphore: semaphore, stats: stats
+                )
+            } catch {
+                let errMsg = String(describing: error).replacingOccurrences(of: "\"", with: "'")
+                let payload = """
+                {"error":{"message":"\(errMsg)","type":"server_error","code":"internal_error"}}
+                """
+                return Response(
+                    status: .internalServerError,
+                    headers: jsonHeaders(),
+                    body: .init(byteBuffer: ByteBuffer(string: payload))
+                )
+            }
         }
 
         // Prometheus-compatible metrics endpoint
@@ -258,13 +355,16 @@ struct MLXServer: AsyncParsableCommand {
         print("[mlx-server] ✅ Ready. Listening on http://\(host):\(port)")
 
         // ── Emit machine-readable ready event for Aegis integration ──
-        let readyEvent: [String: Any] = [
+        var readyEvent: [String: Any] = [
             "event": "ready",
             "port": port,
             "model": modelId,
             "engine": "mlx",
             "vision": isVision
         ]
+        if let plan = partitionPlan {
+            readyEvent["partition"] = plan.healthInfo
+        }
         if let data = try? JSONSerialization.data(withJSONObject: readyEvent),
            let json = String(data: data, encoding: .utf8) {
             print(json)
@@ -303,6 +403,60 @@ struct ServerConfig: Sendable {
     let repeatPenalty: Float?
     let thinking: Bool
     let isVision: Bool
+}
+
+// ── Model Directory Resolution ───────────────────────────────────────────────
+
+/// Resolve a model ID to its local directory (if already downloaded).
+/// Checks: 1) local path, 2) HuggingFace Hub cache.
+/// Returns nil if the model hasn't been downloaded yet.
+func resolveModelDirectory(modelId: String) -> URL? {
+    let fm = FileManager.default
+
+    // Direct local path
+    var isDir: ObjCBool = false
+    if fm.fileExists(atPath: modelId, isDirectory: &isDir), isDir.boolValue {
+        let url = URL(filePath: modelId)
+        // Verify config.json exists
+        if fm.fileExists(atPath: url.appendingPathComponent("config.json").path) {
+            return url
+        }
+    }
+
+    // HuggingFace Hub cache: ~/Library/Caches/huggingface/hub/models--{org}--{model}/snapshots/{hash}/
+    // Also check: ~/.cache/huggingface/hub/models--{org}--{model}/snapshots/{hash}/
+    let hubModelDir = modelId.replacingOccurrences(of: "/", with: "--")
+
+    let cacheDirs: [URL] = [
+        // macOS standard: ~/Library/Caches/huggingface
+        fm.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("huggingface/hub/models--\(hubModelDir)"),
+        // Unix standard: ~/.cache/huggingface
+        fm.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/huggingface/hub/models--\(hubModelDir)")
+    ].compactMap { $0 }
+
+    for cacheDir in cacheDirs {
+        let snapshotsDir = cacheDir.appendingPathComponent("snapshots")
+        guard let snapshots = try? fm.contentsOfDirectory(at: snapshotsDir, includingPropertiesForKeys: [.isDirectoryKey]) else {
+            continue
+        }
+        // Use the most recently modified snapshot
+        let sorted = snapshots
+            .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+            .sorted { a, b in
+                let aDate = (try? fm.attributesOfItem(atPath: a.path)[.modificationDate] as? Date) ?? .distantPast
+                let bDate = (try? fm.attributesOfItem(atPath: b.path)[.modificationDate] as? Date) ?? .distantPast
+                return aDate > bDate
+            }
+        if let latest = sorted.first {
+            if fm.fileExists(atPath: latest.appendingPathComponent("config.json").path) {
+                return latest
+            }
+        }
+    }
+
+    return nil
 }
 
 // ── Server Stats Tracker ───────────────────────────────────────────────────────
@@ -1114,10 +1268,11 @@ struct ChatCompletionRequest: Decodable {
     /// Message content can be a plain string or an array of content parts (text + image_url)
     struct Message: Decodable {
         let role: String
-        let content: MessageContent
+        let content: MessageContent?
 
         /// Extract plain text from content (handles both string and multipart)
         var textContent: String {
+            guard let content = content else { return "" }
             switch content {
             case .string(let s): return s
             case .parts(let parts):
@@ -1130,7 +1285,7 @@ struct ChatCompletionRequest: Decodable {
 
         /// Extract images from multipart content (base64 data URIs and HTTP URLs)
         func extractImages() -> [UserInput.Image] {
-            guard case .parts(let parts) = content else { return [] }
+            guard let content = content, case .parts(let parts) = content else { return [] }
             return parts.compactMap { part -> UserInput.Image? in
                 guard part.type == "image_url", let imageUrl = part.imageUrl else { return nil }
                 let urlStr = imageUrl.url
