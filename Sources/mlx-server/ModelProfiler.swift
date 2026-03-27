@@ -136,6 +136,9 @@ struct PartitionPlan: Sendable {
     let estimatedTokensPerSec: Double
     let warnings: [String]
 
+    /// Actual GPU layers after partitioning (updated by server after model load)
+    var gpuLayers: Int
+
     var fitsInMemory: Bool { strategy == .fullGPU }
 
     /// JSON-compatible dictionary for the /health endpoint
@@ -147,7 +150,8 @@ struct PartitionPlan: Sendable {
             "kv_cache_gb": round(kvCacheMemoryGB * 10) / 10,
             "total_required_gb": round(totalRequiredGB * 10) / 10,
             "system_ram_gb": round(systemRAMGB * 10) / 10,
-            "gpu_layers": recommendedGPULayers,
+            "gpu_layers": gpuLayers,
+            "cpu_layers": totalLayers - gpuLayers,
             "total_layers": totalLayers,
             "estimated_tok_s": round(estimatedTokensPerSec * 10) / 10,
         ]
@@ -409,7 +413,8 @@ enum ModelProfiler {
             recommendedMemoryLimit: memoryLimit,
             recommendedCacheLimit: cacheLimit,
             estimatedTokensPerSec: estimatedSpeed,
-            warnings: warnings
+            warnings: warnings,
+            gpuLayers: gpuLayers  // Initially same as recommended; updated after actual partitioning
         )
     }
 

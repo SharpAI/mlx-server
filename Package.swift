@@ -7,8 +7,7 @@ let package = Package(
     dependencies: [
         // Apple MLX Swift — core inference engine (Apple-maintained, tagged releases)
         .package(url: "https://github.com/ml-explore/mlx-swift", .upToNextMinor(from: "0.30.6")),
-        // Apple's LLM library built on MLX Swift (SharpAI fork)
-        // Pinned to main branch for Qwen3.5 support (PRs #97, #120, #129, #133, #135 — not yet in a release tag)
+        // Apple's LLM library built on MLX Swift (SharpAI fork — with GPU/CPU layer partitioning)
         .package(url: "https://github.com/SharpAI/mlx-swift-lm", branch: "main"),
         // HuggingFace tokenizers + model download
         .package(url: "https://github.com/huggingface/swift-transformers", .upToNextMinor(from: "1.2.0")),

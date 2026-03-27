@@ -124,7 +124,6 @@ struct MLXServer: AsyncParsableCommand {
             case .layerPartitioned:
                 Memory.cacheLimit = plan.recommendedCacheLimit
                 print("[mlx-server] \(plan.strategy.emoji) Memory strategy: LAYER PARTITIONED (\(plan.recommendedGPULayers)/\(plan.totalLayers) GPU layers)")
-                print("[mlx-server]    Note: GPU/CPU layer split requires --gpu-layers support (coming soon)")
                 for w in plan.warnings { print("[mlx-server]    \(w)") }
             case .tooLarge:
                 Memory.cacheLimit = plan.recommendedCacheLimit
@@ -136,13 +135,26 @@ struct MLXServer: AsyncParsableCommand {
             return
         }
 
-        // --gpu-layers validation (accept now, prepare for Phase 2)
-        if let gpuLayersArg = self.gpuLayers, gpuLayersArg != "auto" {
-            if let n = Int(gpuLayersArg) {
-                print("[mlx-server] --gpu-layers \(n) requested. Note: layer-level CPU/GPU split is under development.")
+        // ── Determine GPU layer count ──
+        // Priority: 1) explicit --gpu-layers flag, 2) partition plan auto, 3) nil (all GPU)
+        var requestedGPULayers: Int? = nil
+        if let gpuLayersArg = self.gpuLayers {
+            if gpuLayersArg == "auto" {
+                // Use partition plan recommendation if available
+                requestedGPULayers = partitionPlan?.recommendedGPULayers
+                print("[mlx-server] --gpu-layers auto → \(requestedGPULayers.map(String.init) ?? "all") layers on GPU")
+            } else if let n = Int(gpuLayersArg) {
+                requestedGPULayers = n
+                print("[mlx-server] --gpu-layers \(n) → \(n) layers on GPU")
             } else {
-                print("[mlx-server] Warning: --gpu-layers must be 'auto' or an integer, got '\(gpuLayersArg)'. Using auto.")
+                print("[mlx-server] Warning: --gpu-layers must be 'auto' or an integer, got '\(gpuLayersArg)'. Using all GPU.")
             }
+        } else if let plan = partitionPlan,
+                  (plan.strategy == .layerPartitioned || plan.strategy == .swapAssisted),
+                  plan.overcommitRatio > 1.0 {
+            // Auto-partition when model exceeds available RAM (no flag needed)
+            requestedGPULayers = plan.recommendedGPULayers
+            print("[mlx-server] Auto-partitioning: \(plan.recommendedGPULayers)/\(plan.totalLayers) layers on GPU")
         }
 
         let isVision = self.vision
@@ -161,6 +173,20 @@ struct MLXServer: AsyncParsableCommand {
             ) { progress in
                 let pct = Int(progress.fractionCompleted * 100)
                 print("[mlx-server] Download: \(pct)%")
+            }
+        }
+
+        // ── Apply GPU/CPU layer partitioning ──
+        if let gpuCount = requestedGPULayers {
+            let actual = await container.setGPULayers(gpuCount)
+            if let actual {
+                let total = partitionPlan?.totalLayers ?? actual
+                let cpuCount = total - actual
+                print("[mlx-server] 🔀 Layer split active: \(actual) GPU / \(cpuCount) CPU")
+                // Update the partition plan to reflect actual split
+                partitionPlan?.gpuLayers = actual
+            } else {
+                print("[mlx-server] ⚠️  Model does not support layer partitioning (architecture not yet adapted)")
             }
         }
 
@@ -721,7 +747,7 @@ func handleChatStreaming(
         for await generation in stream {
             if stopped { break }
             switch generation {
-            case .chunk(let text):
+            case .chunk(let text, _):
                 completionTokenCount += 1
                 fullText += text
                 // GPU yield: prevent Metal from starving macOS WindowServer
@@ -792,7 +818,7 @@ func handleChatNonStreaming(
     var tcIndex = 0
     for await generation in stream {
         switch generation {
-        case .chunk(let text):
+        case .chunk(let text, _):
             fullText += text
             completionTokenCount += 1
             // GPU yield: prevent Metal from starving macOS WindowServer
@@ -936,7 +962,7 @@ func handleTextStreaming(
         for await generation in stream {
             if stopped { break }
             switch generation {
-            case .chunk(let text):
+            case .chunk(let text, _):
                 completionTokenCount += 1
                 fullText += text
                 // GPU yield: prevent Metal from starving macOS WindowServer
@@ -993,7 +1019,7 @@ func handleTextNonStreaming(
     var completionTokenCount = 0
     for await generation in stream {
         switch generation {
-        case .chunk(let text):
+        case .chunk(let text, _):
             fullText += text
             completionTokenCount += 1
             // GPU yield: prevent Metal from starving macOS WindowServer
