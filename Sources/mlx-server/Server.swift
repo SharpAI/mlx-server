@@ -79,12 +79,15 @@ struct MLXServer: AsyncParsableCommand {
     @Flag(name: .long, help: "Force re-calibration of optimal memory settings (normally auto-cached)")
     var calibrate: Bool = false
 
+    @Flag(name: .long, help: "Enable SSD expert streaming for MoE models (Flash-MoE style memory-mapping)")
+    var streamExperts: Bool = false
+
     mutating func run() async throws {
         print("[mlx-server] Loading model: \(model)")
         let modelId = model
 
         // ── Load model ──
-        let modelConfig: ModelConfiguration
+        var modelConfig: ModelConfiguration
         let fileManager = FileManager.default
         if fileManager.fileExists(atPath: modelId) {
             var isDir: ObjCBool = false
@@ -97,6 +100,11 @@ struct MLXServer: AsyncParsableCommand {
             }
         } else {
             modelConfig = ModelConfiguration(id: modelId)
+        }
+        
+        // Inject streaming flag into config to bypass eval(model) if requested
+        if self.streamExperts {
+            modelConfig.lazyLoad = true
         }
 
         // ── Pre-load profiling ──
@@ -190,6 +198,16 @@ struct MLXServer: AsyncParsableCommand {
                 partitionPlan?.gpuLayers = actual
             } else {
                 print("[mlx-server] ⚠️  Model does not support layer partitioning (architecture not yet adapted)")
+            }
+        }
+
+        // ── Apply SSD Expert Streaming ──
+        if self.streamExperts {
+            let streamingEnabled = await container.setStreamExperts(true)
+            if streamingEnabled {
+                print("[mlx-server] 💾 SSD Expert Streaming enabled (lazy load + layer-sync)")
+            } else {
+                print("[mlx-server] ⚠️  Model does not support SSD expert streaming")
             }
         }
 
