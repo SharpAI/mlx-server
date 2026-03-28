@@ -23,33 +23,24 @@ import MLXVLM
 
 final class ProgressTracker {
     var lastUpdate: TimeInterval = 0
-    var lastBytes: Int64 = 0
-    var speedStr = "0.0 MB/s"
     var isDone = false
+    var spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    var frameIndex = 0
     
     func printProgress(_ progress: Progress) {
         if isDone { return }
         let now = Date().timeIntervalSince1970
-        
-        let completed = progress.completedUnitCount
-        let total = progress.totalUnitCount
         let fraction = progress.fractionCompleted
         
         if lastUpdate == 0 { lastUpdate = now }
         let interval = now - lastUpdate
         
-        if interval >= 0.5 {
-            let diff = Double(completed - lastBytes)
-            let speedMBps = (diff / interval) / 1_048_576.0
-            speedStr = String(format: "%.1f MB/s", speedMBps)
-            
-            lastBytes = completed
+        if interval > 0.1 {
+            frameIndex = (frameIndex + 1) % spinnerFrames.count
             lastUpdate = now
         }
         
         let pct = Int(fraction * 100)
-        let completedMB = String(format: "%.1f", Double(completed) / 1_048_576)
-        let totalMB = String(format: "%.1f", Double(total) / 1_048_576)
         
         let barLength = 20
         let completedBars = min(barLength, Int(fraction * Double(barLength)))
@@ -64,9 +55,13 @@ final class ProgressTracker {
         bars += String(repeating: " ", count: emptyBars)
         
         let pctStr = String(format: "%3d%%", pct)
-        let msg = String(format: "\r[mlx-server] Download: [%@] %@ (%@ MB / %@ MB) | Speed: %@", bars, pctStr, completedMB, totalMB, speedStr)
+        let spinner = spinnerFrames[frameIndex]
         
-        print(msg.padding(toLength: 100, withPad: " ", startingAt: 0), terminator: "")
+        // If the library properly bubbled up throughput or total bytes, we'd show it,
+        // but swift-transformers aggregated Progress uses abstract units (e.g. 100 for total).
+        let msg = String(format: "\r[mlx-server] Download: [%@] %@ %@", bars, pctStr, spinner)
+        
+        print(msg.padding(toLength: 80, withPad: " ", startingAt: 0), terminator: "")
         fflush(stdout)
         
         if fraction >= 1.0 {
