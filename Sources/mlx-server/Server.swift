@@ -22,13 +22,14 @@ import MLXVLM
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
 final class ProgressTracker {
-    var lastUpdate: TimeInterval = 0
-    var lastBytes: Int64 = 0
-    var speedStr = "0.0 MB/s"
     var isDone = false
     var spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
     var frameIndex = 0
     let modelId: String
+    private var trackingTask: Task<Void, Never>?
+    private var lastUpdate: TimeInterval = 0
+    private var lastBytes: Int64 = 0
+    private var speedStr = "0.0 MB/s"
     
     init(modelId: String) {
         self.modelId = modelId
@@ -44,7 +45,6 @@ final class ProgressTracker {
             var total: Int64 = 0
             if let enumerator = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: [.fileSizeKey]) {
                 for case let file as URL in enumerator {
-                    // Quick check to skip symlinks from inflating size
                     if let attr = try? file.resourceValues(forKeys: [.fileSizeKey, .isSymbolicLinkKey]),
                        let size = attr.fileSize,
                        attr.isSymbolicLink != true {
@@ -59,56 +59,74 @@ final class ProgressTracker {
     }
     
     func printProgress(_ progress: Progress) {
-        if isDone { return }
-        let now = Date().timeIntervalSince1970
-        let fraction = progress.fractionCompleted
-        
-        if lastUpdate == 0 { 
-            lastUpdate = now
+        if trackingTask == nil {
+            lastUpdate = Date().timeIntervalSince1970
             lastBytes = getDownloadedBytes()
-        }
-        let interval = now - lastUpdate
-        
-        if interval > 0.5 {
-            frameIndex = (frameIndex + 1) % spinnerFrames.count
             
-            let currentBytes = getDownloadedBytes()
-            let diff = Double(currentBytes - lastBytes)
-            if diff >= 0 {
-                let speedMBps = (diff / interval) / 1_048_576.0
-                speedStr = String(format: "%.1f MB/s", speedMBps)
+            trackingTask = Task {
+                while !self.isDone && !Task.isCancelled {
+                    let now = Date().timeIntervalSince1970
+                    let fraction = progress.fractionCompleted
+                    let pct = Int(fraction * 100)
+                    
+                    let interval = now - self.lastUpdate
+                    if interval >= 0.25 {
+                        self.frameIndex = (self.frameIndex + 1) % self.spinnerFrames.count
+                        
+                        let currentBytes = self.getDownloadedBytes()
+                        let diff = Double(currentBytes - self.lastBytes)
+                        if diff >= 0 {
+                            let speedMBps = (diff / interval) / 1_048_576.0
+                            self.speedStr = String(format: "%.1f MB/s", speedMBps)
+                        } else {
+                            // File moved/cleaned up cache, omit negative speed
+                        }
+                        
+                        self.lastBytes = currentBytes
+                        self.lastUpdate = now
+                    }
+                    
+                    var completedMB = String(format: "%.1f", Double(self.lastBytes) / 1_048_576)
+                    var totalMB = "???"
+                    if fraction > 0.001 {
+                        let extrapolated = (Double(self.lastBytes) / fraction) / 1_048_576.0
+                        totalMB = String(format: "%.1f", extrapolated)
+                    } else if fraction == 0.0 {
+                         completedMB = "0.0"
+                    }
+                    
+                    let barLength = 20
+                    let completedBars = min(barLength, Int(fraction * Double(barLength)))
+                    let emptyBars = max(0, barLength - completedBars)
+                    
+                    var bars = ""
+                    if completedBars > 0 {
+                        bars += String(repeating: "=", count: completedBars - 1) + ">"
+                    }
+                    bars += String(repeating: " ", count: emptyBars)
+                    
+                    let pctStr = String(format: "%3d%%", pct)
+                    let spinner = self.spinnerFrames[self.frameIndex]
+                    let speedText = "| Speed: \(self.speedStr)"
+                    
+                    let msg = String(format: "\r[mlx-server] Download: [%@] %@ %@ (%@ MB / %@ MB) %@", bars, pctStr, spinner, completedMB, totalMB, speedText)
+                    
+                    print(msg.padding(toLength: 100, withPad: " ", startingAt: 0), terminator: "")
+                    fflush(stdout)
+                    
+                    if fraction >= 1.0 {
+                        print("")
+                        self.isDone = true
+                        break
+                    }
+                    
+                    do {
+                        try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+                    } catch {
+                        break
+                    }
+                }
             }
-            
-            lastBytes = currentBytes
-            lastUpdate = now
-        }
-        
-        let pct = Int(fraction * 100)
-        
-        let barLength = 20
-        let completedBars = min(barLength, Int(fraction * Double(barLength)))
-        let emptyBars = max(0, barLength - completedBars)
-        
-        var bars = ""
-        if completedBars > 0 {
-            bars += String(repeating: "=", count: completedBars - 1) + ">"
-        } else {
-            bars += ""
-        }
-        bars += String(repeating: " ", count: emptyBars)
-        
-        let pctStr = String(format: "%3d%%", pct)
-        let spinner = spinnerFrames[frameIndex]
-        let speedText = "| Speed: \(speedStr)"
-        
-        let msg = String(format: "\r[mlx-server] Download: [%@] %@ %@ %@", bars, pctStr, spinner, speedText)
-        
-        print(msg.padding(toLength: 90, withPad: " ", startingAt: 0), terminator: "")
-        fflush(stdout)
-        
-        if fraction >= 1.0 {
-            print("")
-            isDone = true
         }
     }
 }
