@@ -97,27 +97,7 @@ curl http://localhost:5413/v1/chat/completions \
 ```
 ---
 
-## 🛡️ Aegis-AI & System Integration
 
-`mlx-server` is designed to be a completely transparent, drop-in substitution for `llama-server` or cloud VLM gateways within local intelligence platforms like **Aegis-AI**, offering dramatically faster zero-latency inference on macOS instances.
-
-When configuring local inference workflows (e.g., within `~/.aegis-ai/llm-config.json`), apply the following integration details:
-
-### 1. Gateway Emulation
-`mlx-server` exposes a fully standard OpenAI-compatible API layer:
-- **`GET /health`**: Exposes advanced JSON containing GPU metrics and VRAM allocations.
-- **`GET /v1/models`**: Lists actively loaded topologies.
-- **`POST /v1/chat/completions`**: Supports both `stream: true` and `stream: false`. Natively handles tool-calls, system prompts, and temperature variables.
-
-### 2. Process Configuration (The Sidecar)
-When your agent engine spins up `mlx-server` using standard subprocess management, you must be explicitly aware of the memory requirements for *Mixture of Expert* (MoE) models.
-
-> [!CAUTION]
-> **Critical Memory Routing (`--stream-experts`)**  
-> When managing MoE models (e.g., `Qwen3.5-122B-A10B` where active parameters are significantly smaller than the total payload), you **must artificially append** the `--stream-experts true` flag to the process arguments. If omitted, macOS will inevitably suffer a `Data Abort` memory-mapping fault when mapping > 100GB of tensors onto the unified GPU hardware.
-
-
----
 ## ⚙️ CLI Options
 
 | Option | Default | Description |
