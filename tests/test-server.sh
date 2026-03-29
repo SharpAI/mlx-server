@@ -31,17 +31,17 @@ fail() { FAIL=$((FAIL + 1)); TOTAL=$((TOTAL + 1)); echo -e "  ${RED}❌ FAIL${NC
 cleanup() {
     if [ -n "${SERVER_PID:-}" ]; then
         log "Stopping server (PID $SERVER_PID)"
-        kill "$SERVER_PID" 2>/dev/null || true
+        kill -9 "$SERVER_PID" 2>/dev/null || true
         wait "$SERVER_PID" 2>/dev/null || true
     fi
     if [ -n "${CORS_SERVER_PID:-}" ]; then
         log "Stopping CORS server (PID $CORS_SERVER_PID)"
-        kill "$CORS_SERVER_PID" 2>/dev/null || true
+        kill -9 "$CORS_SERVER_PID" 2>/dev/null || true
         wait "$CORS_SERVER_PID" 2>/dev/null || true
     fi
     if [ -n "${AUTH_SERVER_PID:-}" ]; then
         log "Stopping auth server (PID $AUTH_SERVER_PID)"
-        kill "$AUTH_SERVER_PID" 2>/dev/null || true
+        kill -9 "$AUTH_SERVER_PID" 2>/dev/null || true
         wait "$AUTH_SERVER_PID" 2>/dev/null || true
     fi
 }

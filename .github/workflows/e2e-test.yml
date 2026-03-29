@@ -43,7 +43,7 @@ jobs:
 
       - name: Run E2E tests
         env:
-          HF_HUB_DOWNLOAD_TIMEOUT: "120"
+          HF_HUB_DOWNLOAD_TIMEOUT: "600"
         run: |
           chmod +x tests/test-server.sh
           # Retry up to 2 times for transient HuggingFace download failures
