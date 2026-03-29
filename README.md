@@ -116,11 +116,6 @@ When your agent engine spins up `mlx-server` using standard subprocess managemen
 > **Critical Memory Routing (`--stream-experts`)**  
 > When managing MoE models (e.g., `Qwen3.5-122B-A10B` where active parameters are significantly smaller than the total payload), you **must artificially append** the `--stream-experts true` flag to the process arguments. If omitted, macOS will inevitably suffer a `Data Abort` memory-mapping fault when mapping > 100GB of tensors onto the unified GPU hardware.
 
-### 3. Client Reliability Overrides (First-Request Lock)
-> [!WARNING]
-> Because zero-copy heavy matrices (like 122B parameter graphs) require **3-5+ minutes of pure compile-time lockup** on their *very first request* to build the specialized Apple Metal compilation graphs, **standard short-timeouts (e.g., 60s) will fail the first request.**  
-> 
-> Ensure your system's `node-fetch` metrics checks, network controllers, or `curl` abort signals extend standard timeouts to `> 300s`.
 
 ---
 ## ⚙️ CLI Options
