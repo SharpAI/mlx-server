@@ -36,13 +36,12 @@ No Python runtime, no Global Interpreter Lock (GIL), no unnecessary memory copie
 
 ## 💻 Tested Hardware & Benchmarks
 
-To reliably run massive 122B parameter MoE models over SSD streaming, `mlx-server` was designed and benchmarked on the following hardware:
+To reliably run massive 122B parameter MoE models over SSD streaming, `mlx-server` was designed and benchmarked natively on the following hardware:
 
-- **Machine**: MacBook Pro, Apple M3 Max
-- **Chip**: 16-core CPU (12P + 4E), 40-core GPU, 16-core ANE
-- **Memory**: 48 GB Unified (~400 GB/s bandwidth)
-- **SSD**: 1TB Apple Fabric, 17.5 GB/s sequential read (measured)
-- **OS**: macOS 26.2 (Darwin 25.2.0)
+- **Machine**: MacBook Pro, Apple M5 Pro
+- **Memory**: 64 GB Unified Memory
+- **Model**: Qwen3.5-122B-A10B-4bit
+- **SSD**: Internal Apple NVMe (Zero-Copy Streaming)
 
 > **⚠️ Quantization Disclaimer**: While heavier quantization shrinks the required memory footprint, **4-bit quantization** remains the strict production standard for MoE models. Our metrics indicated that aggressive 2-bit quantization heavily destabilizes JSON grammars—routinely producing broken keys like `\name\` instead of `"name"`—which systematically breaks OpenAI-compatible tool calling.
 
