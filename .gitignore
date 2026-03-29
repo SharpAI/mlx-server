@@ -14,3 +14,10 @@ DerivedData/
 .vscode/
 .idea/
 mlx-swift-lm
+
+# Temporary Artifacts & Logs
+*.log
+*.metallib
+*.pid
+curl_out.txt
+sample.txt
