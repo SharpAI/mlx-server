@@ -17,15 +17,15 @@ No Python runtime, no Global Interpreter Lock (GIL), no unnecessary memory copie
 
 ## 🆚 Why `mlx-server`? (vs. llama.cpp & python mlx-lm)
 
-| Feature | `mlx-server` (Swift) | `llama.cpp` (Metal) | `python mlx-lm` | `vLLM` (Flash-MoE) |
-| :--- | :--- | :--- | :--- | :--- |
-| **Backend Math** | Official Apple MLX (Metal) | Custom Metal Shaders | Official Apple MLX | NVIDIA CUDA / Triton |
-| **Target Hardware** | Consumer Apple Silicon | Universal (CPU/Mac) | Consumer Apple Silicon | Datacenter NVIDIA GPUs |
-| **Concurrency / GIL** | 🟢 **Zero GIL** (Swift async) | 🟢 **Zero GIL** (C++) | 🔴 **GIL Bottlenecked** (Python) | 🟢 **Zero GIL** (C++/Python) |
-| **Model Format** | Native HF (Safetensors)| GGUF (Requires Conversion) | Native HF (Safetensors)| Native HF (Safetensors) |
-| **MoE Memory Footprint**| 🟢 **Direct SSD Streaming** | 🟡 CPU `mmap` Swapping | 🔴 OS Swap (High pressure) | 🟢 **Flash-MoE** (High VRAM required) |
-| **KV Cache** | 🟢 **TurboQuantization** | 🟢 Aggressive Quantization | 🟡 Standard Python Hooks | 🟢 PagedAttention |
-| **Dependencies** | None (Single Native Binary) | None (Single Native Binary) | Python Runtime, `pip` | Heavy CUDA Python Environment |
+| Feature | `mlx-server` (Swift) | `llama.cpp` (Metal) | `python mlx-lm` |
+| :--- | :--- | :--- | :--- |
+| **Backend Math** | Official Apple MLX (Metal) | Custom Metal Shaders | Official Apple MLX |
+| **Target Hardware** | Consumer Apple Silicon | Universal (CPU/Mac) | Consumer Apple Silicon |
+| **Concurrency / GIL** | 🟢 **Zero GIL** (Swift async) | 🟢 **Zero GIL** (C++) | 🔴 **GIL Bottlenecked** (Python) |
+| **Model Format** | Native HF (Safetensors) | GGUF (Requires Conversion) | Native HF (Safetensors) |
+| **MoE Memory Footprint**| 🟢 **Flash-MoE** (SSD Streaming) | 🟡 CPU `mmap` Swapping | 🔴 OS Swap (High pressure) |
+| **KV Cache** | 🟢 **TurboQuantization** | 🟢 Aggressive Quantization | 🟡 Standard Python Hooks |
+| **Dependencies** | None (Single Native Binary) | None (Single Native Binary) | Python Runtime, `pip` |
 
 **The TL;DR:**
 - Use **`llama.cpp`** if you prefer GGUF formats and are running cross-platform on Windows/Linux.
