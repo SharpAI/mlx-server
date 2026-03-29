@@ -141,11 +141,7 @@ kernel void streamed_moe_gemm(
         encoder.set_input_array(w, 1);
         
         // Ensure memory is allocated for output BEFORE adding to the Metal encoder
-        o.set_data(
-            allocator::malloc(o.size() * o.itemsize()),
-            o.size(),
-            o.strides(),
-            o.flags());
+        o.set_data(allocator::malloc(o.nbytes()));
         encoder.set_output_array(o, 2);
 
         uint M = static_cast<uint>(x.size() / x.shape().back());
