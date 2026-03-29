@@ -1010,6 +1010,7 @@ func handleChatNonStreaming(
     var completionTokenCount = 0
     var collectedToolCalls: [ToolCallResponse] = []
     var tcIndex = 0
+    var generationStopReason: GenerateStopReason = .stop
     for await generation in stream {
         switch generation {
         case .chunk(let text, _):
@@ -1027,8 +1028,8 @@ func handleChatNonStreaming(
                 function: ToolCallFunction(name: tc.function.name, arguments: argsJson)
             ))
             tcIndex += 1
-        case .info:
-            break
+        case .info(let info):
+            generationStopReason = info.stopReason
         }
     }
     let duration = Date().timeIntervalSince(genStart)
@@ -1036,9 +1037,15 @@ func handleChatNonStreaming(
     await semaphore.signal()
 
     // ── Apply stop sequences to final text ──
-    var finishReason = "stop"
-    if let (trimmedText, _) = checkStopSequences(fullText, stopSequences: stopSequences) {
-        fullText = trimmedText
+    var finishReason: String
+    switch generationStopReason {
+    case .length:
+        finishReason = "length"
+    default:
+        finishReason = "stop"
+    }
+    if checkStopSequences(fullText, stopSequences: stopSequences) != nil {
+        fullText = checkStopSequences(fullText, stopSequences: stopSequences)!.0
         finishReason = "stop"
     }
 
