@@ -59,7 +59,8 @@ swift build -c release
 
 ```bash
 .build/release/mlx-server \
-  --model mlx-community/Qwen2.5-3B-Instruct-4bit \
+  --model Qwen3.5-122B-A10B-4bit \
+  --stream-experts true \
   --port 5413
 ```
 
@@ -83,9 +84,12 @@ Drop-in compatible with standard OpenAI HTTP consumers:
 curl http://localhost:5413/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "mlx-community/Qwen2.5-3B-Instruct-4bit",
+    "model": "Qwen3.5-122B-A10B-4bit",
     "stream": true,
-    "messages": [{"role": "user", "content": "Explain the speed of light."}]
+    "messages": [
+      {"role": "system", "content": "You are Aegis-AI, a local home security agent. Output strictly in JSON format."},
+      {"role": "user", "content": "Clip 1: Delivery person drops package at 14:02. Clip 2: Delivery person walks away down driveway at 14:03. Do these clips represent the same security event? Output a JSON object with a `duplicate` boolean and a `reason` string."}
+    ]
   }'
 ```
 
