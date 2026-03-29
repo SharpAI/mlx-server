@@ -13,7 +13,6 @@ DerivedData/
 # IDE
 .vscode/
 .idea/
-mlx-swift-lm
 
 # Temporary Artifacts & Logs
 *.log
