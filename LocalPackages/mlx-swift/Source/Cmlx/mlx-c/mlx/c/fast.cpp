@@ -6,7 +6,28 @@
 #include "mlx/c/fast.h"
 #include "mlx/c/error.h"
 #include "mlx/c/private/mlx.h"
+#include "mlx/array.h"
 #include "mlx/fast.h"
+#include "mlx/core/moe_stream_op.h"
+#include "mlx/fast/turbo_quant.h"
+
+namespace mlx::core {
+void prefault(const array& a) {
+    if (!a.data_shared_ptr()) return;
+    const uint8_t* ptr = static_cast<const uint8_t*>(const_cast<allocator::Buffer&>(a.buffer()).raw_ptr());
+    if (!ptr) return;
+    
+    // volatile to prevent the compiler from optimizing the read away
+    volatile uint8_t tmp = 0;
+    size_t size = a.buffer_size();
+    
+    // Read one byte per 16KB page to trigger the OS page fault handler
+    // on the CPU, avoiding the 5-second GPU Watchdog timeout.
+    for (size_t i = 0; i < size; i += 16384) {
+        tmp += ptr[i];
+    }
+}
+}
 
 struct mlx_fast_cuda_kernel_config_cpp_ {
   std::vector<mlx::core::Shape> output_shapes;
@@ -631,3 +652,165 @@ extern "C" int mlx_fast_scaled_dot_product_attention(
   }
   return 0;
 }
+
+#include <json.hpp>
+#include <fstream>
+#include <mutex>
+#include <unordered_map>
+#include "mlx/backend/metal/ssd_streamer.h"
+
+struct SSDStreamEntry {
+    std::shared_ptr<mlx::core::fast::SSDStreamer> streamer;
+    // Maps expert_count -> (data_start_in_file, bytes_per_expert)
+    // Key is the number of experts in the tensor (dim 0)
+    std::unordered_map<size_t, std::pair<size_t, size_t>> expert_offset_map;
+};
+
+static std::mutex streamer_cache_mutex;
+static std::unordered_map<std::string, SSDStreamEntry> streamer_cache;
+
+extern "C" int mlx_fast_streamed_gather_mm(
+    mlx_array* res,
+    const mlx_array x,
+    const mlx_array w_shape,
+    uint32_t active_expert,
+    const char* safetensors_path,
+    const char* tensor_name,
+    const mlx_stream s) {
+  try {
+    std::string path(safetensors_path);
+    std::string target_tensor(tensor_name);
+    std::shared_ptr<mlx::core::fast::SSDStreamer> streamer;
+    
+    // The expert index is provided directly now
+    
+    // We need the max possible expert index range → use w_shape dim 0
+    auto w_shape_arr = mlx_array_get_(w_shape);
+    size_t E = w_shape_arr.shape(0); // number of experts (e.g. 256)
+    
+    size_t data_start = 0;      // absolute byte offset in file to first expert's weight
+    size_t bytes_per_expert = 0; // size in bytes of one expert's weight matrix
+    
+    {
+        std::lock_guard<std::mutex> lock(streamer_cache_mutex);
+        auto it = streamer_cache.find(path);
+        if (it != streamer_cache.end()) {
+            streamer = it->second.streamer;
+            auto& emap = it->second.expert_offset_map;
+            auto eit = emap.find(E);
+            if (eit != emap.end()) {
+                data_start    = eit->second.first;
+                bytes_per_expert = eit->second.second;
+            }
+        }
+        
+        if (!streamer || bytes_per_expert == 0) {
+            // Parse safetensors JSON header to find expert tensor layout
+            std::ifstream in(path, std::ios::binary);
+            if (!in.is_open()) throw std::runtime_error("[SSD] Cannot open: " + path);
+            
+            uint64_t hlen = 0;
+            in.read(reinterpret_cast<char*>(&hlen), 8);
+            std::vector<char> hbuf(hlen);
+            in.read(hbuf.data(), hlen);
+            auto j = nlohmann::json::parse(hbuf.data(), hbuf.data() + hlen);
+            in.close();
+            
+            // The data section begins after the 8-byte length prefix + JSON header
+            size_t data_section_start = 8 + hlen;
+            
+            // Find a tensor whose first dim matches E (our expert count)
+            // All expert weight tensors have shape [E, OD, ID_packed]
+            // bytes_per_expert = OD * ID_packed * dtype_bytes
+            // Search for the specific matching tensor_name
+            for (auto& item : j.items()) {
+                if (item.key() == target_tensor) {
+                    auto& v = item.value();
+                    auto offsets = v.at("data_offsets").get<std::vector<size_t>>();
+                    size_t tensor_data_start = data_section_start + offsets[0];
+                    size_t tensor_total_bytes = offsets[1] - offsets[0];
+                    bytes_per_expert = tensor_total_bytes / E;
+                    data_start = tensor_data_start;
+                    break;
+                }
+            }
+            
+            if (bytes_per_expert == 0) {
+                throw std::runtime_error("[SSD] Could not find exactly match for tensor " + target_tensor + " containing " + std::to_string(E) + " experts in " + path);
+            }
+            
+            if (!streamer) {
+                streamer = std::make_shared<mlx::core::fast::SSDStreamer>(path, bytes_per_expert);
+                SSDStreamEntry entry;
+                entry.streamer = streamer;
+                entry.expert_offset_map[E] = {data_start, bytes_per_expert};
+                streamer_cache[path] = std::move(entry);
+            } else {
+                streamer_cache[path].expert_offset_map[E] = {data_start, bytes_per_expert};
+            }
+        }
+    }
+    
+    // Build per-expert absolute file offsets
+    std::vector<off_t> eo(E + 1);
+    for (size_t i = 0; i <= E; ++i) {
+        eo[i] = static_cast<off_t>(data_start + i * bytes_per_expert);
+    }
+
+    mlx_array_set_(
+        *res,
+        mlx::core::streamed_gather_mm(
+            mlx_array_get_(x),
+            mlx_array_get_(w_shape),
+            active_expert,
+            streamer,
+            eo,
+            mlx_stream_get_(s).device
+        ));
+  } catch (std::exception& e) {
+    mlx_error(e.what());
+    return 1;
+  }
+  return 0;
+}
+
+extern "C" int mlx_fast_turbo_encode(
+    mlx_array* res_polar_k,
+    mlx_array* res_polar_v,
+    mlx_array* res_residual_k,
+    mlx_array* res_residual_v,
+    const mlx_array keys,
+    const mlx_array values,
+    int k_bits,
+    const mlx_stream s) {
+    try {
+        // Evaluate the TurboQuant primitive to get PolarQuant tensors
+        auto qkv = mlx::core::fast::turbo_encode(
+            mlx_array_get_(keys),
+            mlx_array_get_(values),
+            k_bits,
+            mlx_stream_get_(s).device
+        );
+
+        mlx_array_set_(*res_polar_k, qkv.polar_keys);
+        mlx_array_set_(*res_polar_v, qkv.polar_values);
+        mlx_array_set_(*res_residual_k, qkv.qjl_key_residuals);
+        mlx_array_set_(*res_residual_v, qkv.qjl_value_residuals);
+    } catch (std::exception& e) {
+        mlx_error(e.what());
+        return 1;
+    }
+    return 0;
+}
+
+extern "C" int mlx_fast_prefault(
+    mlx_array x) {
+    try {
+        mlx::core::prefault(mlx_array_get_(x));
+    } catch (std::exception& e) {
+        mlx_error(e.what());
+        return 1;
+    }
+    return 0;
+}
+
