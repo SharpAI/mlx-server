@@ -194,8 +194,28 @@ int mlx_fast_scaled_dot_product_attention(
     float scale,
     const char* mask_mode,
     const mlx_array mask_arr /* may be null */,
-    const mlx_array sinks /* may be null */,
     const mlx_stream s);
+
+int mlx_fast_streamed_gather_mm(
+    mlx_array* res,
+    const mlx_array x,
+    const mlx_array w_shape,
+    const mlx_array expert_indices,
+    const char* safetensors_path,
+    const char* tensor_name,
+    const mlx_stream s);
+
+int mlx_fast_turbo_encode(
+    mlx_array* res_polar_k,
+    mlx_array* res_polar_v,
+    mlx_array* res_residual_k,
+    mlx_array* res_residual_v,
+    const mlx_array keys,
+    const mlx_array values,
+    int k_bits,
+    const mlx_stream s);
+
+int mlx_fast_prefault(mlx_array x);
 
 /**@}*/
 

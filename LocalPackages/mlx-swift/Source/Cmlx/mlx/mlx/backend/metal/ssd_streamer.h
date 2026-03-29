@@ -17,12 +17,8 @@ namespace mlx::core::metal {
 
 namespace mlx::core::fast {
 
-struct StreamBuffer {
-    MTL::Buffer* mtl_buffer; // Tied to MTLResourceStorageModeShared
-    void* raw_ptr;
-    size_t size;
-    bool is_busy;
-};
+// The StreamBuffer pool is removed in favor of caller-provided pinned memory
+// managed natively by mlx::core::allocator.
 
 class SSDStreamer {
 public:
@@ -34,22 +30,14 @@ public:
     SSDStreamer& operator=(const SSDStreamer&) = delete;
 
     /**
+    /**
      * Dispatch an asynchronous GCD POSIX read from the safetensors file descriptor.
      * @param byte_offset The offset into the .safetensors file.
-     * @param length The number of bytes to read (must be <= buffer_size_bytes).
-     * @return The StreamBuffer containing the pinned Metal memory, marked as busy.
+     * @param length The number of bytes to read
+     * @param dst_ptr The destination pointer (must be GPU accessible, e.g. via MLX allocator)
+     * @return The synchronization token that the GPU must wait on before executing.
      */
-    StreamBuffer* prefetch_async(off_t byte_offset, size_t length);
-
-    /**
-     * Synchronize and wait for a specific buffer's read to complete.
-     */
-    void wait_until_ready(StreamBuffer* buffer);
-
-    /**
-     * Release a buffer back to the streamer pool after the Metal kernel finishes.
-     */
-    void release_buffer(StreamBuffer* buffer);
+    void load_sync(off_t byte_offset, size_t length, void* dst_ptr);
 
 private:
     std::string file_path_;
@@ -58,10 +46,15 @@ private:
     dispatch_queue_t io_queue_;
 
     size_t buffer_size_bytes_;
-    std::vector<std::unique_ptr<StreamBuffer>> buffers_;
 
-    // To prevent blocking the GPU, we round-robin or track free buffers
-    int next_buffer_idx_;
+    
+    // Hardware synchronization primitives
+    MTL::SharedEvent* shared_event_;
+    uint64_t event_counter_;
+    
+public:
+    MTL::SharedEvent* get_shared_event() const { return shared_event_; }
+    const std::string& get_file_path() const { return file_path_; }
 };
 
 } // namespace mlx::core::fast
