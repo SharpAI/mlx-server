@@ -970,9 +970,15 @@ func handleChatStreaming(
                 let argsJson = serializeToolCallArgs(tc.function.arguments)
                 cont.yield(sseToolCallChunk(modelId: modelId, index: toolCallIndex, name: tc.function.name, arguments: argsJson))
                 toolCallIndex += 1
-            case .info:
+            case .info(let info):
                 if !stopped {
-                    let reason = hasToolCalls ? "tool_calls" : "stop"
+                    var reason: String
+                    switch info.stopReason {
+                    case .length:
+                        reason = "length"
+                    case .cancelled, .stop:
+                        reason = hasToolCalls ? "tool_calls" : "stop"
+                    }
                     cont.yield(sseChunk(modelId: modelId, delta: "", finishReason: reason))
                     if includeUsage {
                         cont.yield(sseUsageChunk(modelId: modelId, promptTokens: promptTokenCount, completionTokens: completionTokenCount))
@@ -1186,9 +1192,16 @@ func handleTextStreaming(
                 }
             case .toolCall:
                 break
-            case .info:
+            case .info(let info):
                 if !stopped {
-                    cont.yield(sseTextChunk(modelId: modelId, text: "", finishReason: "stop"))
+                    var reason: String
+                    switch info.stopReason {
+                    case .length:
+                        reason = "length"
+                    case .cancelled, .stop:
+                        reason = "stop"
+                    }
+                    cont.yield(sseTextChunk(modelId: modelId, text: "", finishReason: reason))
                     cont.yield("data: [DONE]\n\n")
                     cont.finish()
                 }
