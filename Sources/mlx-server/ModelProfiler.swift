@@ -304,8 +304,12 @@ enum ModelProfiler {
     static func systemProfile() -> SystemProfile {
         let totalRAM = ProcessInfo.processInfo.physicalMemory
         let deviceInfo = GPU.deviceInfo()
-        // Use memorySize as working set approximation (UMA — GPU memory = system RAM)
-        let recommended = deviceInfo.memorySize
+        // IMPORTANT: GPU.deviceInfo().memorySize returns Apple's artificially capped
+        // Metal Working Set limit (~22-23GB on a 64GB M5 Pro), NOT the full physical RAM.
+        // For SSD streaming mode, we must use the actual physical RAM budget:
+        // 85% of total RAM, minus a 4GB OS reservation = realistic GPU pressure limit.
+        let physicalBudget = Int(Double(totalRAM) * 0.85) - (4 * 1024 * 1024 * 1024)
+        let recommended = max(physicalBudget, Int(deviceInfo.memorySize))
 
         return SystemProfile(
             totalRAMBytes: totalRAM,
