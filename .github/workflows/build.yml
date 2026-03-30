@@ -35,3 +35,12 @@ jobs:
         run: |
           ls -lh .build/release/mlx-server
           file .build/release/mlx-server
+
+      - name: TurboQuant unit tests
+        run: |
+          # Compile and run standalone C++ unit tests for the TurboQuant
+          # KV cache compression algorithm (ported from TheTom/llama-cpp-turboquant).
+          # Tests: centroids, WHT self-inverse, rotation orthogonality,
+          #        3-bit pack/unpack, V-cache SNR, K-cache IP SNR, fp16 round-trip.
+          clang++ -std=c++17 -O2 -o /tmp/tq_test tests/test_turbo_quant.cpp
+          /tmp/tq_test

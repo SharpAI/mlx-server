@@ -43,6 +43,15 @@ jobs:
           path: ~/.cache/huggingface
           key: mlx-model-qwen2.5-0.5b-4bit
 
+      - name: TurboQuant unit tests
+        run: |
+          # Fast pre-flight: verify compression math before expensive model download.
+          # Tests: Lloyd-Max centroids, WHT correctness, rotation orthogonality,
+          #        3-bit pack/unpack, V-cache SNR (14.6 dB), K-cache IP SNR (13.7 dB), fp16.
+          # No external deps — compiles standalone with clang++.
+          clang++ -std=c++17 -O2 -o /tmp/tq_test tests/test_turbo_quant.cpp
+          /tmp/tq_test
+
       - name: Run E2E tests
         env:
           HF_HUB_DOWNLOAD_TIMEOUT: "600"
