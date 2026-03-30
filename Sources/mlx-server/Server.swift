@@ -887,6 +887,11 @@ func handleChatCompletion(
     let promptTokenCount = lmInput.text.tokens.size
     let systemHash = systemPromptText.hashValue
 
+    // llama-server style: announce prefill start
+    print("srv  slot_launch: id 0 | prompt=\(promptTokenCount)t | prefilling...")
+    fflush(stdout)
+    let prefillStart = Date()
+
     // ── Cache-aware generation ──
     let stream: AsyncStream<Generation> = try await container.perform { context in
         let cache = context.model.newCache(parameters: params)
@@ -940,12 +945,14 @@ func handleChatCompletion(
         return handleChatStreaming(
             stream: stream, modelId: modelId, stopSequences: stopSequences,
             includeUsage: includeUsage, promptTokenCount: promptTokenCount,
-            jsonMode: jsonMode, semaphore: semaphore, stats: stats, genStart: genStart
+            jsonMode: jsonMode, semaphore: semaphore, stats: stats,
+            genStart: genStart, prefillStart: prefillStart
         )
     } else {
         return try await handleChatNonStreaming(
             stream: stream, modelId: modelId, stopSequences: stopSequences,
-            promptTokenCount: promptTokenCount, jsonMode: jsonMode, semaphore: semaphore, stats: stats, genStart: genStart
+            promptTokenCount: promptTokenCount, jsonMode: jsonMode, semaphore: semaphore,
+            stats: stats, genStart: genStart, prefillStart: prefillStart
         )
     }
 }
@@ -961,7 +968,8 @@ func handleChatStreaming(
     jsonMode: Bool = false,
     semaphore: AsyncSemaphore,
     stats: ServerStats,
-    genStart: Date
+    genStart: Date,
+    prefillStart: Date
 ) -> Response {
     let (sseStream, cont) = AsyncStream<String>.makeStream()
     Task {
@@ -981,9 +989,12 @@ func handleChatStreaming(
                 if completionTokenCount % 8 == 0 {
                     try? await Task.sleep(for: .microseconds(50))
                 }
-                // Real-time stdout: print token text as it arrives (no newline)
+                // Real-time stdout: on first token, log prefill completion + start generate line
                 if firstToken {
-                    print("srv  generate: prompt=\(promptTokenCount)t | ", terminator: "")
+                    let prefillDur = Date().timeIntervalSince(prefillStart)
+                    let prefillTokPerSec = prefillDur > 0 ? Double(promptTokenCount) / prefillDur : 0
+                    print("srv  slot update: id 0 | prefill done | n_tokens=\(promptTokenCount), t=\(String(format: "%.2f", prefillDur))s, \(String(format: "%.1f", prefillTokPerSec))t/s")
+                    print("srv  generate: id 0 | ", terminator: "")
                     firstToken = false
                 }
                 print(text, terminator: "")
@@ -999,7 +1010,7 @@ func handleChatStreaming(
                     if includeUsage {
                         cont.yield(sseUsageChunk(modelId: modelId, promptTokens: promptTokenCount, completionTokens: completionTokenCount))
                     }
-                    cont.yield("data: [DONE]\n\n")
+                    cont.yield("data: [DONE]\r\n\r\n")
                     cont.finish()
                     stopped = true
                 } else {
@@ -1023,7 +1034,7 @@ func handleChatStreaming(
                     if includeUsage {
                         cont.yield(sseUsageChunk(modelId: modelId, promptTokens: promptTokenCount, completionTokens: completionTokenCount))
                     }
-                    cont.yield("data: [DONE]\n\n")
+                    cont.yield("data: [DONE]\r\n\r\n")
                     cont.finish()
                     // llama-server style: print newline then full response JSON
                     print("")  // end the real-time token stream line
@@ -1072,7 +1083,8 @@ func handleChatNonStreaming(
     jsonMode: Bool = false,
     semaphore: AsyncSemaphore,
     stats: ServerStats,
-    genStart: Date
+    genStart: Date,
+    prefillStart: Date
 ) async throws -> Response {
     var fullText = ""
     var completionTokenCount = 0
@@ -1089,9 +1101,12 @@ func handleChatNonStreaming(
             if completionTokenCount % 8 == 0 {
                 try? await Task.sleep(for: .microseconds(50))
             }
-            // Real-time stdout: print token text as it arrives (no newline)
+            // Real-time stdout: on first token, log prefill completion + start generate line
             if firstToken {
-                print("srv  generate: prompt=\(promptTokenCount)t | ", terminator: "")
+                let prefillDur = Date().timeIntervalSince(prefillStart)
+                let prefillTokPerSec = prefillDur > 0 ? Double(promptTokenCount) / prefillDur : 0
+                print("srv  slot update: id 0 | prefill done | n_tokens=\(promptTokenCount), t=\(String(format: "%.2f", prefillDur))s, \(String(format: "%.1f", prefillTokPerSec))t/s")
+                print("srv  generate: id 0 | ", terminator: "")
                 firstToken = false
             }
             print(text, terminator: "")
@@ -1497,7 +1512,7 @@ func sseChunk(modelId: String, delta: String, finishReason: String?) -> String {
         "choices": [choiceObj]
     ]
     let data = try! JSONSerialization.data(withJSONObject: chunk)
-    return "data: \(String(data: data, encoding: .utf8)!)\n\n"
+    return "data: \(String(data: data, encoding: .utf8)!)\r\n\r\n"
 }
 
 func sseUsageChunk(modelId: String, promptTokens: Int, completionTokens: Int) -> String {
@@ -1514,7 +1529,7 @@ func sseUsageChunk(modelId: String, promptTokens: Int, completionTokens: Int) ->
         ]
     ]
     let data = try! JSONSerialization.data(withJSONObject: chunk)
-    return "data: \(String(data: data, encoding: .utf8)!)\n\n"
+    return "data: \(String(data: data, encoding: .utf8)!)\r\n\r\n"
 }
 
 func sseToolCallChunk(modelId: String, index: Int, name: String, arguments: String) -> String {
@@ -1540,7 +1555,7 @@ func sseToolCallChunk(modelId: String, index: Int, name: String, arguments: Stri
         ] as [String: Any]]
     ]
     let data = try! JSONSerialization.data(withJSONObject: chunk)
-    return "data: \(String(data: data, encoding: .utf8)!)\n\n"
+    return "data: \(String(data: data, encoding: .utf8)!)\r\n\r\n"
 }
 
 func sseTextChunk(modelId: String, text: String, finishReason: String?) -> String {
@@ -1559,7 +1574,7 @@ func sseTextChunk(modelId: String, text: String, finishReason: String?) -> Strin
         "choices": [choiceObj]
     ]
     let data = try! JSONSerialization.data(withJSONObject: chunk)
-    return "data: \(String(data: data, encoding: .utf8)!)\n\n"
+    return "data: \(String(data: data, encoding: .utf8)!)\r\n\r\n"
 }
 
 func serializeToolCallArgs(_ args: [String: JSONValue]) -> String {
