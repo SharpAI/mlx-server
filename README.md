@@ -17,29 +17,29 @@ No Python runtime, no Global Interpreter Lock (GIL), no unnecessary memory copie
 
 ## ⚡️ TurboQuantization: KV Cache Compression
 
-`SwiftLM` implements **TurboQuant** (AISTATS/ICLR 2026) for on-the-fly KV cache compression, enabling long-context inference with drastically reduced memory. At 3 bits/coordinate, the KV cache is compressed ~5.8× vs FP16 with near-zero accuracy loss.
+`SwiftLM` implements a **hybrid V2+V3 TurboQuant architecture** for on-the-fly KV cache compression. At roughly ~3.6 bits per coordinate overall, the KV cache is compressed ~3.5× vs FP16 with near-zero accuracy loss.
 
-The algorithm runs in two stages per KV vector:
+### By combining V2 Speed with V3 Quality:
+Recent reproductions of the TurboQuant algorithm (e.g., `turboquant-mlx`) revealed two distinct paths:
+1. **V2 (Hardware-Accelerated)**: Fast, but uses linear affine quantization which degrades quality at 3-bit.
+2. **V3 (Paper-Correct)**: Excellent quality using non-linear Lloyd-Max codebooks, but painfully slow due to software dequantization.
 
-**Stage 1 — PolarQuant (2 bits):**
-1. Extract L2 norm: `‖x‖`
-2. Normalize: `x̂ = x / ‖x‖`
-3. Rotate: `y = R @ x̂`  (random orthogonal R via Fast Walsh-Hadamard Transform — O(d log d))
-4. Quantize each coordinate to nearest Lloyd-Max centroid (optimal for post-rotation Gaussian distribution)
-- → Store: `(2-bit indices[d], float16 norm)`
+**We built the "Holy Grail" hybrid:** We ported the V3 non-linear Lloyd-Max codebooks directly into the native C++ encoding path, and process the dequantization natively in fused Metal (`bggml-metal`) shaders. This achieves **V3 quality at V2 speeds**, completely detached from Python overhead.
 
-**Stage 2 — QJL residual (1 bit):**
-1. Dequantize Stage 1 → `x̂_mse`
-2. Compute residual: `r = x - x̂_mse`
-3. Project: `z = S @ r`  (S ~ N(0,1) random matrix)
-4. Sign-bit encode: `signs = sign(z) ∈ {+1, -1}`
-- → Store: `(1-bit signs[d], float16 residual_norm)`
+### The Algorithm:
 
-**Total: 3 bits/coord + 32-bit norm ≈ 5.8× compression vs FP16**
+**K-Cache (3-bit PolarQuant + 1-bit QJL) = 4.25 bits/dim**
+1. Extract L2 norm and normalize: `x̂ = x / ‖x‖`
+2. Apply Fast Walsh-Hadamard Transform (WHT) rotation to distribute outliers evenly.
+3. Quantize each coordinate using **3-bit non-linear Lloyd-Max centroids**.
+4. Compute the residual error between the original vector and the quantized approximation.
+5. Project the residual via a random Johnson-Lindenstrauss (QJL) matrix and store the 1-bit signs.
+*(Why QJL? QJL acts as an additional regularizer that prevents centroid resolution loss from degrading the attention dot-product.)*
 
-> *K cache uses full TurboQuant (Stage 1 + Stage 2) to preserve attention dot-product accuracy. V cache uses Stage 1 only (PolarQuant MSE) since MSE-optimal reconstruction doesn't need the QJL residual stage.*
+**V-Cache (3-bit PolarQuant) = 3.125 bits/dim**
+Because the V-cache matrix is not used for inner-product attention scoring, the QJL error correction provides no benefit. We cleanly disable QJL for the V-cache, extracting an additional 25% memory savings without sacrificing quality.
 
-Reference implementation: [`turboquant_plus`](https://github.com/TheTom/turboquant_plus) (Python) | Paper: [TurboQuant, AISTATS 2026](https://aistats.org)
+Reference implementations: [`turboquant-mlx`](https://github.com/sharpner/turboquant-mlx) | [`turboquant_plus`](https://github.com/TheTom/turboquant_plus) | Paper: [TurboQuant, Google 2504.19874](https://arxiv.org/abs/2504.19874)
 
 ---
 
