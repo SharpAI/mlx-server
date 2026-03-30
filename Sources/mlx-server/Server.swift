@@ -982,7 +982,7 @@ struct ThinkingStateTracker {
                 if let range = buffer.range(of: "<think>") {
                     // Flush text before the tag as response content
                     content += String(buffer[buffer.startIndex..<range.lowerBound])
-                    buffer.removeSubrange(buffer.startIndex...range.upperBound.index(before: range.upperBound))
+                    buffer.removeSubrange(buffer.startIndex..<range.upperBound)
                     phase = .thinking
                 } else if buffer.hasSuffix("<") || buffer.hasSuffix("<t") || buffer.hasSuffix("<th") ||
                           buffer.hasSuffix("<thi") || buffer.hasSuffix("<thin") || buffer.hasSuffix("<think") {
@@ -996,7 +996,7 @@ struct ThinkingStateTracker {
                 if let range = buffer.range(of: "</think>") {
                     // Flush reasoning before the closing tag
                     reasoning += String(buffer[buffer.startIndex..<range.lowerBound])
-                    buffer.removeSubrange(buffer.startIndex...range.upperBound.index(before: range.upperBound))
+                    buffer.removeSubrange(buffer.startIndex..<range.upperBound)
                     phase = .responding
                 } else if isSuffixOfClosingTag(buffer) {
                     // Partial closing tag — hold in buffer
