@@ -60,7 +60,7 @@ jobs:
           # Retry up to 2 times for transient HuggingFace download failures
           for attempt in 1 2 3; do
             echo "Attempt $attempt of 3..."
-            if tests/test-server.sh .build/release/mlx-server 15413; then
+            if tests/test-server.sh .build/release/SwiftLM 15413; then
               exit 0
             fi
             if [ "$attempt" -lt 3 ]; then
@@ -76,5 +76,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-test-logs
-          path: /tmp/mlx-server-test-*.log
+          path: /tmp/SwiftLM-test-*.log
           retention-days: 7

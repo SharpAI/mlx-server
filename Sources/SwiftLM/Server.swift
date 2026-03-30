@@ -1,4 +1,4 @@
-// mlx-server — Minimal OpenAI-compatible HTTP server backed by Apple MLX Swift
+// SwiftLM — Native Swift OpenAI-compatible HTTP server backed by Apple MLX Swift
 //
 // Endpoints:
 //   GET  /health                    → { "status": "ok", "model": "<id>" }
@@ -7,7 +7,7 @@
 //   POST /v1/completions            → OpenAI Text Completions (streaming + non-streaming)
 //
 // Usage:
-//   mlx-server --model mlx-community/Qwen2.5-3B-Instruct-4bit --port 5413
+//   SwiftLM --model mlx-community/Qwen2.5-3B-Instruct-4bit --port 5413
 
 import ArgumentParser
 import CoreImage
@@ -109,7 +109,7 @@ final class ProgressTracker {
                     let spinner = self.spinnerFrames[self.frameIndex]
                     let speedText = "| Speed: \(self.speedStr)"
                     
-                    let msg = String(format: "\r[mlx-server] Download: [%@] %@ %@ (%@ MB / %@ MB) %@", bars, pctStr, spinner, completedMB, totalMB, speedText)
+                    let msg = String(format: "\r[SwiftLM] Download: [%@] %@ %@ (%@ MB / %@ MB) %@", bars, pctStr, spinner, completedMB, totalMB, speedText)
                     
                     print(msg.padding(toLength: 100, withPad: " ", startingAt: 0), terminator: "")
                     fflush(stdout)
@@ -134,7 +134,7 @@ final class ProgressTracker {
 @main
 struct MLXServer: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "mlx-server",
+        commandName: "SwiftLM",
         abstract: "OpenAI-compatible LLM server powered by Apple MLX"
     )
 
@@ -199,7 +199,7 @@ struct MLXServer: AsyncParsableCommand {
     var prefillSize: Int = 512
 
     mutating func run() async throws {
-        print("[mlx-server] Loading model: \(model)")
+        print("[SwiftLM] Loading model: \(model)")
         let modelId = model
 
         // ── Load model ──
@@ -209,7 +209,7 @@ struct MLXServer: AsyncParsableCommand {
             var isDir: ObjCBool = false
             fileManager.fileExists(atPath: modelId, isDirectory: &isDir)
             if isDir.boolValue {
-                print("[mlx-server] Loading from local directory: \(modelId)")
+                print("[SwiftLM] Loading from local directory: \(modelId)")
                 modelConfig = ModelConfiguration(directory: URL(filePath: modelId))
             } else {
                 modelConfig = ModelConfiguration(id: modelId)
@@ -235,7 +235,7 @@ struct MLXServer: AsyncParsableCommand {
             // we need a buffer budget of ~120-150 ops before the outer eval+sync
             // in partitionedLayerCall fires. Set a conservative limit.
             setenv("MLX_MAX_OPS_PER_BUFFER", "50", 1)
-            print("[mlx-server] Enabled Async SSD Streaming on directory: \(modelDir.lastPathComponent)")
+            print("[SwiftLM] Enabled Async SSD Streaming on directory: \(modelDir.lastPathComponent)")
         }
         
         var partitionPlan: PartitionPlan?
@@ -255,7 +255,7 @@ struct MLXServer: AsyncParsableCommand {
             // Apply memory strategy
             switch plan.strategy {
             case .fullGPU:
-                print("[mlx-server] \(plan.strategy.emoji) Memory strategy: FULL GPU (\(String(format: "%.1f", plan.weightMemoryGB))GB model, \(String(format: "%.1f", system.availableRAMGB))GB available)")
+                print("[SwiftLM] \(plan.strategy.emoji) Memory strategy: FULL GPU (\(String(format: "%.1f", plan.weightMemoryGB))GB model, \(String(format: "%.1f", system.availableRAMGB))GB available)")
             case .swapAssisted:
                 if self.streamExperts {
                     // SSD Streaming: expert weights are mmap'd from SSD via the OS page cache.
@@ -263,30 +263,30 @@ struct MLXServer: AsyncParsableCommand {
                     let physicalBudget = Int(Double(system.totalRAMBytes) * 0.85) - (4 * 1024 * 1024 * 1024)
                     Memory.cacheLimit = physicalBudget
                     Memory.memoryLimit = 200 * 1024 * 1024 * 1024 // 200GB sentinel to bypass MLX eval_impl spin loop
-                    print("[mlx-server] 💾 Memory strategy: SSD STREAMING (page-cache managed, \(physicalBudget / (1024*1024*1024))GB RAM budget, no swap)")
+                    print("[SwiftLM] 💾 Memory strategy: SSD STREAMING (page-cache managed, \(physicalBudget / (1024*1024*1024))GB RAM budget, no swap)")
                 } else {
                     Memory.cacheLimit = plan.recommendedCacheLimit
-                    print("[mlx-server] \(plan.strategy.emoji) Memory strategy: SWAP-ASSISTED (\(String(format: "%.1f", plan.overcommitRatio))× overcommit, cache limited to \(plan.recommendedCacheLimit / (1024*1024))MB)")
-                    for w in plan.warnings { print("[mlx-server]    \(w)") }
+                    print("[SwiftLM] \(plan.strategy.emoji) Memory strategy: SWAP-ASSISTED (\(String(format: "%.1f", plan.overcommitRatio))× overcommit, cache limited to \(plan.recommendedCacheLimit / (1024*1024))MB)")
+                    for w in plan.warnings { print("[SwiftLM]    \(w)") }
                 }
             case .layerPartitioned:
                 if self.streamExperts {
                     let physicalBudget = Int(Double(system.totalRAMBytes) * 0.85) - (4 * 1024 * 1024 * 1024)
                     Memory.cacheLimit = physicalBudget
                     Memory.memoryLimit = 200 * 1024 * 1024 * 1024 // 200GB sentinel to bypass MLX eval_impl spin loop
-                    print("[mlx-server] 💾 Memory strategy: SSD STREAMING (page-cache managed, \(physicalBudget / (1024*1024*1024))GB RAM budget, no swap)")
+                    print("[SwiftLM] 💾 Memory strategy: SSD STREAMING (page-cache managed, \(physicalBudget / (1024*1024*1024))GB RAM budget, no swap)")
                 } else {
                     Memory.cacheLimit = plan.recommendedCacheLimit
-                    print("[mlx-server] \(plan.strategy.emoji) Memory strategy: LAYER PARTITIONED (\(plan.recommendedGPULayers)/\(plan.totalLayers) GPU layers, cache limited to \(plan.recommendedCacheLimit / (1024*1024))MB)")
-                    for w in plan.warnings { print("[mlx-server]    \(w)") }
+                    print("[SwiftLM] \(plan.strategy.emoji) Memory strategy: LAYER PARTITIONED (\(plan.recommendedGPULayers)/\(plan.totalLayers) GPU layers, cache limited to \(plan.recommendedCacheLimit / (1024*1024))MB)")
+                    for w in plan.warnings { print("[SwiftLM]    \(w)") }
                 }
             case .tooLarge:
                 Memory.cacheLimit = plan.recommendedCacheLimit
-                print("[mlx-server] \(plan.strategy.emoji) WARNING: Model is \(String(format: "%.1f", plan.overcommitRatio))× system RAM. Loading will be extremely slow.")
-                for w in plan.warnings { print("[mlx-server]    \(w)") }
+                print("[SwiftLM] \(plan.strategy.emoji) WARNING: Model is \(String(format: "%.1f", plan.overcommitRatio))× system RAM. Loading will be extremely slow.")
+                for w in plan.warnings { print("[SwiftLM]    \(w)") }
             }
         } else if self.info {
-            print("[mlx-server] Model not yet downloaded. Run without --info to download first, or provide a local path.")
+            print("[SwiftLM] Model not yet downloaded. Run without --info to download first, or provide a local path.")
             return
         }
 
@@ -297,24 +297,24 @@ struct MLXServer: AsyncParsableCommand {
             if gpuLayersArg == "auto" {
                 // Use partition plan recommendation if available
                 requestedGPULayers = partitionPlan?.recommendedGPULayers
-                print("[mlx-server] --gpu-layers auto → \(requestedGPULayers.map(String.init) ?? "all") layers on GPU")
+                print("[SwiftLM] --gpu-layers auto → \(requestedGPULayers.map(String.init) ?? "all") layers on GPU")
             } else if let n = Int(gpuLayersArg) {
                 requestedGPULayers = n
-                print("[mlx-server] --gpu-layers \(n) → \(n) layers on GPU")
+                print("[SwiftLM] --gpu-layers \(n) → \(n) layers on GPU")
             } else {
-                print("[mlx-server] Warning: --gpu-layers must be 'auto' or an integer, got '\(gpuLayersArg)'. Using all GPU.")
+                print("[SwiftLM] Warning: --gpu-layers must be 'auto' or an integer, got '\(gpuLayersArg)'. Using all GPU.")
             }
         } else if let plan = partitionPlan,
                   (plan.strategy == .layerPartitioned || plan.strategy == .swapAssisted),
                   plan.overcommitRatio > 1.0 {
             if self.streamExperts {
-                print("[mlx-server] SSD Streaming active: Bypassing CPU auto-partitioning (forcing all layers to GPU)")
+                print("[SwiftLM] SSD Streaming active: Bypassing CPU auto-partitioning (forcing all layers to GPU)")
                 partitionPlan?.gpuLayers = plan.totalLayers
                 // Keep requestedGPULayers = nil (all GPU)
             } else {
                 // Auto-partition when model exceeds available RAM (no flag needed)
                 requestedGPULayers = plan.recommendedGPULayers
-                print("[mlx-server] Auto-partitioning: \(plan.recommendedGPULayers)/\(plan.totalLayers) layers on GPU")
+                print("[SwiftLM] Auto-partitioning: \(plan.recommendedGPULayers)/\(plan.totalLayers) layers on GPU")
             }
         }
 
@@ -329,7 +329,7 @@ struct MLXServer: AsyncParsableCommand {
         let tracker = ProgressTracker(modelId: resolvedModelId)
         
         if isVision {
-            print("[mlx-server] Loading VLM (vision-language model)...")
+            print("[SwiftLM] Loading VLM (vision-language model)...")
             container = try await VLMModelFactory.shared.loadContainer(
                 configuration: modelConfig
             ) { progress in
@@ -349,11 +349,11 @@ struct MLXServer: AsyncParsableCommand {
             if let actual {
                 let total = partitionPlan?.totalLayers ?? actual
                 let cpuCount = total - actual
-                print("[mlx-server] 🔀 Layer split active: \(actual) GPU / \(cpuCount) CPU")
+                print("[SwiftLM] 🔀 Layer split active: \(actual) GPU / \(cpuCount) CPU")
                 // Update the partition plan to reflect actual split
                 partitionPlan?.gpuLayers = actual
             } else {
-                print("[mlx-server] ⚠️  Model does not support layer partitioning (architecture not yet adapted)")
+                print("[SwiftLM] ⚠️  Model does not support layer partitioning (architecture not yet adapted)")
             }
         }
 
@@ -361,9 +361,9 @@ struct MLXServer: AsyncParsableCommand {
         if self.streamExperts {
             let streamingEnabled = await container.setStreamExperts(true)
             if streamingEnabled {
-                print("[mlx-server] 💾 SSD Expert Streaming enabled (lazy load + layer-sync)")
+                print("[SwiftLM] 💾 SSD Expert Streaming enabled (lazy load + layer-sync)")
             } else {
-                print("[mlx-server] ⚠️  Model does not support SSD expert streaming")
+                print("[SwiftLM] ⚠️  Model does not support SSD expert streaming")
             }
         }
 
@@ -382,13 +382,13 @@ struct MLXServer: AsyncParsableCommand {
                 if wisdom.cacheLimit > 0 {
                     Memory.cacheLimit = wisdom.cacheLimit
                 }
-                print("[mlx-server] 📊 Loaded wisdom: \(String(format: "%.1f", wisdom.tokPerSec)) tok/s, cache=\(wisdom.cacheLimit / (1024*1024))MB (calibrated \(wisdom.calibratedAt.formatted(.relative(presentation: .named))))")
+                print("[SwiftLM] 📊 Loaded wisdom: \(String(format: "%.1f", wisdom.tokPerSec)) tok/s, cache=\(wisdom.cacheLimit / (1024*1024))MB (calibrated \(wisdom.calibratedAt.formatted(.relative(presentation: .named))))")
             }
         } else if self.streamExperts {
-            print("[mlx-server] 🧠 Auto-calibration (Wisdom) bypassed for SSD Streaming")
+            print("[SwiftLM] 🧠 Auto-calibration (Wisdom) bypassed for SSD Streaming")
         }
 
-        print("[mlx-server] Model loaded. Starting HTTP server on \(host):\(port)")
+        print("[SwiftLM] Model loaded. Starting HTTP server on \(host):\(port)")
 
         // ── Capture CLI defaults into a shared config ──
         let config = ServerConfig(
@@ -413,7 +413,7 @@ struct MLXServer: AsyncParsableCommand {
             let bytes = memLimitMB * 1024 * 1024
             Memory.memoryLimit = bytes
             Memory.cacheLimit = bytes
-            print("[mlx-server] Memory limit set to \(memLimitMB)MB (overrides wisdom)")
+            print("[SwiftLM] Memory limit set to \(memLimitMB)MB (overrides wisdom)")
         }
 
         // ── Concurrency limiter ──
@@ -430,7 +430,7 @@ struct MLXServer: AsyncParsableCommand {
         let thinkingStr = config.thinking ? "enabled" : "disabled"
         let ssdStr = self.streamExperts ? "enabled" : "disabled"
         let turboKVStr = config.turboKV ? "enabled" : "disabled"
-        print("[mlx-server] Config: ctx_size=\(ctxSizeStr), temp=\(config.temp), top_p=\(config.topP), repeat_penalty=\(penaltyStr), parallel=\(parallelSlots), cors=\(corsStr), mem_limit=\(memLimitStr), auth=\(authStr), thinking=\(thinkingStr), ssd_stream=\(ssdStr), turbo_kv=\(turboKVStr)")
+        print("[SwiftLM] Config: ctx_size=\(ctxSizeStr), temp=\(config.temp), top_p=\(config.topP), repeat_penalty=\(penaltyStr), parallel=\(parallelSlots), cors=\(corsStr), mem_limit=\(memLimitStr), auth=\(authStr), thinking=\(thinkingStr), ssd_stream=\(ssdStr), turbo_kv=\(turboKVStr)")
 
         // ── Build Hummingbird router ──
         let router = Router()
@@ -587,7 +587,7 @@ struct MLXServer: AsyncParsableCommand {
             configuration: .init(address: .hostname(host, port: port))
         )
 
-        print("[mlx-server] ✅ Ready. Listening on http://\(host):\(port)")
+        print("[SwiftLM] ✅ Ready. Listening on http://\(host):\(port)")
 
         // ── Emit machine-readable ready event for Aegis integration ──
         var readyEvent: [String: Any] = [
@@ -626,11 +626,11 @@ struct MLXServer: AsyncParsableCommand {
         signal(SIGINT, SIG_IGN)
 
         shutdownSource.setEventHandler {
-            print("\n[mlx-server] Received SIGTERM, shutting down gracefully...")
+            print("\n[SwiftLM] Received SIGTERM, shutting down gracefully...")
             Darwin.exit(0)
         }
         interruptSource.setEventHandler {
-            print("\n[mlx-server] Received SIGINT, shutting down gracefully...")
+            print("\n[SwiftLM] Received SIGINT, shutting down gracefully...")
             Darwin.exit(0)
         }
         shutdownSource.resume()

@@ -1,11 +1,11 @@
-# Aegis-AI Integration Prompt: mlx-server Backend
+# Aegis-AI Integration Prompt: SwiftLM Backend
 
-Aegis-AI can seamlessly substitute `llama-server` or cloud VLM gateways with `mlx-server` for dramatically faster zero-latency inference on macOS instances.
+Aegis-AI can seamlessly substitute `llama-server` or cloud VLM gateways with `SwiftLM` for dramatically faster zero-latency inference on macOS instances.
 
 When configuring local inference within the `~/.aegis-ai/llm-config.json` configuration layer, apply the following integration details:
 
 ## 1. Gateway Emulation
-`mlx-server` exposes a fully standard OpenAI-compatible API layer. 
+`SwiftLM` exposes a fully standard OpenAI-compatible API layer. 
 - **Endpoint**: `http://127.0.0.1:5413/v1` (or whatever `port` is provided)
 - **Supported Routes**:
   - `GET /health` (Exposes advanced JSON containing GPU metrics/VRAM allocations)
@@ -14,11 +14,11 @@ When configuring local inference within the `~/.aegis-ai/llm-config.json` config
 
 ## 2. Process Configuration (The Sidecar)
 
-The Aegis-AI deployment engine should spin up the `mlx-server` sidecar using standard subprocess management. 
+The Aegis-AI deployment engine should spin up the `SwiftLM` sidecar using standard subprocess management. 
 
 ### Launch Command
 ```bash
-/path/to/mlx-server/.build/release/mlx-server \
+/path/to/SwiftLM/.build/release/SwiftLM \
   --model {MODEL_IDENTIFIER_OR_PATH} \
   --host 127.0.0.1 \
   --port {PORT_NUMBER}
@@ -30,7 +30,7 @@ If this flag is omitted, macOS will inevitably suffer a `Data Abort` memory-mapp
 
 Example:
 ```bash
-.build/release/mlx-server --model mlx-community/Qwen3.5-122B-A10B-4bit --stream-experts true --port 5413
+.build/release/SwiftLM --model mlx-community/Qwen3.5-122B-A10B-4bit --stream-experts true --port 5413
 ```
 
 

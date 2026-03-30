@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "mlx-server",
+    name: "SwiftLM",
     platforms: [.macOS(.v14)],
     dependencies: [
         // Local Apple MLX Swift fork for C++ extensions
@@ -18,7 +18,7 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "mlx-server",
+            name: "SwiftLM",
             dependencies: [
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
@@ -28,7 +28,7 @@ let package = Package(
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
-            path: "Sources/mlx-server",
+            path: "Sources/SwiftLM",
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency")
             ]

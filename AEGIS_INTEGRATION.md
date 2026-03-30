@@ -1,6 +1,6 @@
 # 🛡️ Aegis-AI Integration Guide
 
-`mlx-server` is designed to be a **completely transparent, drop-in replacement** for `llama-server` or any cloud VLM gateway within Aegis-AI, delivering dramatically faster zero-latency inference on Apple Silicon.
+`SwiftLM` is designed to be a **completely transparent, drop-in replacement** for `llama-server` or any cloud VLM gateway within Aegis-AI, delivering dramatically faster zero-latency inference on Apple Silicon.
 
 ---
 
@@ -8,17 +8,17 @@
 
 ### 1. Download the Binary
 
-Download the latest pre-built binary from the [Releases page](https://github.com/SharpAI/mlx-server/releases) — no Xcode required:
+Download the latest pre-built binary from the [Releases page](https://github.com/SharpAI/SwiftLM/releases) — no Xcode required:
 
 ```bash
 # Extract and make executable
-tar -xzf mlx-server-*-macos-arm64.tar.gz
-chmod +x mlx-server
+tar -xzf SwiftLM-*-macos-arm64.tar.gz
+chmod +x SwiftLM
 ```
 
 ### 2. Point Aegis-AI at the Server
 
-In your `~/.aegis-ai/llm-config.json`, set the base URL to the mlx-server endpoint:
+In your `~/.aegis-ai/llm-config.json`, set the base URL to the SwiftLM endpoint:
 
 ```json
 {
@@ -30,10 +30,10 @@ In your `~/.aegis-ai/llm-config.json`, set the base URL to the mlx-server endpoi
 
 ### 3. Launch the Sidecar
 
-Aegis-AI should spin up `mlx-server` as a managed subprocess:
+Aegis-AI should spin up `SwiftLM` as a managed subprocess:
 
 ```bash
-/path/to/mlx-server \
+/path/to/SwiftLM \
   --model mlx-community/Qwen2.5-7B-Instruct-4bit \
   --host 127.0.0.1 \
   --port 5413
@@ -54,7 +54,7 @@ Aegis-AI should **wait for this event** before routing any requests to the serve
 If you are running a Mixture of Experts (MoE) model — such as `Qwen3.5-122B-A10B` — you **must** pass the `--stream-experts true` flag.
 
 ```bash
-/path/to/mlx-server \
+/path/to/SwiftLM \
   --model mlx-community/Qwen3.5-122B-A10B-4bit \
   --host 127.0.0.1 \
   --port 5413 \
@@ -66,7 +66,7 @@ If you are running a Mixture of Experts (MoE) model — such as `Qwen3.5-122B-A1
 
 ### Why `--stream-experts` Works
 
-MoE models like Qwen3.5-122B have 122B *total* parameters, but only ~10B are **active** on any single forward pass. `mlx-server` exploits this sparsity:
+MoE models like Qwen3.5-122B have 122B *total* parameters, but only ~10B are **active** on any single forward pass. `SwiftLM` exploits this sparsity:
 
 - The 60GB+ of expert weight matrices are `mmap`'d directly from your NVMe SSD
 - Only the **2-4 specific expert shards** selected by the router for the current token (~1.5MB each) are streamed into GPU RAM via a zero-copy DMA path
@@ -85,13 +85,13 @@ Due to SSD streaming, TTFT is higher than a fully in-memory model. This is **exp
 | Long (1000+ tokens) | 1–3 minutes |
 
 > [!TIP]
-> **Aegis-AI Prompt Cache**: `mlx-server` automatically caches the KV state for repeated system prompts. After the first request with a given system prompt, subsequent requests with the same system prompt will skip the expensive prefill phase and start streaming almost immediately.
+> **Aegis-AI Prompt Cache**: `SwiftLM` automatically caches the KV state for repeated system prompts. After the first request with a given system prompt, subsequent requests with the same system prompt will skip the expensive prefill phase and start streaming almost immediately.
 
 ---
 
 ## 📡 API Reference
 
-`mlx-server` is **fully OpenAI-compatible** — any client using the OpenAI SDK works without modification.
+`SwiftLM` is **fully OpenAI-compatible** — any client using the OpenAI SDK works without modification.
 
 ### Endpoints
 
@@ -174,7 +174,7 @@ curl http://127.0.0.1:5413/v1/chat/completions \
 
 ## 🔍 Memory Behaviour Explained
 
-On Apple Silicon, GPU and system RAM are the **same physical chips** (Unified Memory Architecture). `mlx-server` uses a layered strategy to fit the largest possible models:
+On Apple Silicon, GPU and system RAM are the **same physical chips** (Unified Memory Architecture). `SwiftLM` uses a layered strategy to fit the largest possible models:
 
 | Model Size vs. RAM | Strategy | Notes |
 |---|---|---|
@@ -186,7 +186,7 @@ On Apple Silicon, GPU and system RAM are the **same physical chips** (Unified Me
 You can always inspect the computed memory plan before loading a model:
 
 ```bash
-mlx-server --model mlx-community/Qwen3.5-122B-A10B-4bit --info
+SwiftLM --model mlx-community/Qwen3.5-122B-A10B-4bit --info
 ```
 
 ---
@@ -202,5 +202,5 @@ mlx-server --model mlx-community/Qwen3.5-122B-A10B-4bit --info
 ## 🔗 Resources
 
 - [Main README](./README.md) — general usage and benchmarks
-- [GitHub Releases](https://github.com/SharpAI/mlx-server/releases) — pre-built binaries
+- [GitHub Releases](https://github.com/SharpAI/SwiftLM/releases) — pre-built binaries
 - [mlx-swift](https://github.com/ml-explore/mlx-swift) — underlying MLX framework

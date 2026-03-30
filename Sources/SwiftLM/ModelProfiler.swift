@@ -430,7 +430,7 @@ enum ModelProfiler {
         let thinSep = String(repeating: "─", count: 56)
 
         print("╔\(separator)╗")
-        print("║  mlx-server Model Memory Analysis\(String(repeating: " ", count: 25))║")
+        print("║  SwiftLM Model Memory Analysis\(String(repeating: " ", count: 25))║")
         print("╠\(separator)╣")
 
         // Model info

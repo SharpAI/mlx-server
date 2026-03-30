@@ -65,23 +65,23 @@ jobs:
 
       - name: Verify binary
         run: |
-          ls -lh .build/release/mlx-server
-          file .build/release/mlx-server
-          .build/release/mlx-server --help || true
+          ls -lh .build/release/SwiftLM
+          file .build/release/SwiftLM
+          .build/release/SwiftLM --help || true
 
       - name: Package binary
         run: |
           mkdir -p release
-          cp .build/release/mlx-server release/
+          cp .build/release/SwiftLM release/
           cp LICENSE README.md release/
           cd release
-          tar -czvf ../mlx-server-${{ steps.tag.outputs.name }}-macos-arm64.tar.gz .
+          tar -czvf ../SwiftLM-${{ steps.tag.outputs.name }}-macos-arm64.tar.gz .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mlx-server-${{ steps.tag.outputs.name }}-macos-arm64
-          path: mlx-server-${{ steps.tag.outputs.name }}-macos-arm64.tar.gz
+          name: SwiftLM-${{ steps.tag.outputs.name }}-macos-arm64
+          path: SwiftLM-${{ steps.tag.outputs.name }}-macos-arm64.tar.gz
           retention-days: 90
 
       - name: Prepare release notes
@@ -89,7 +89,7 @@ jobs:
         run: |
           CHANGELOG=$(cat /tmp/changelog.txt)
           cat > /tmp/release_notes.md << 'RELEASE_EOF'
-          ## mlx-server ${{ steps.tag.outputs.full }}
+          ## SwiftLM ${{ steps.tag.outputs.full }}
 
           <details open>
 
@@ -105,15 +105,15 @@ jobs:
 
           ### Download
 
-          - [macOS Apple Silicon (arm64)](https://github.com/SharpAI/mlx-server/releases/download/${{ steps.tag.outputs.name }}/mlx-server-${{ steps.tag.outputs.name }}-macos-arm64.tar.gz)
+          - [macOS Apple Silicon (arm64)](https://github.com/SharpAI/SwiftLM/releases/download/${{ steps.tag.outputs.name }}/SwiftLM-${{ steps.tag.outputs.name }}-macos-arm64.tar.gz)
 
           ### Quick Start
           ```bash
-          tar -xzf mlx-server-${{ steps.tag.outputs.name }}-macos-arm64.tar.gz
-          ./mlx-server --model mlx-community/Qwen2.5-3B-Instruct-4bit --port 5413
+          tar -xzf SwiftLM-${{ steps.tag.outputs.name }}-macos-arm64.tar.gz
+          ./SwiftLM --model mlx-community/Qwen2.5-3B-Instruct-4bit --port 5413
           ```
 
-          > **Note:** Requires `mlx.metallib` next to the binary for GPU compute. See [README](https://github.com/SharpAI/mlx-server#metal-shader-library) for setup.
+          > **Note:** Requires `mlx.metallib` next to the binary for GPU compute. See [README](https://github.com/SharpAI/SwiftLM#metal-shader-library) for setup.
           RELEASE_EOF
 
       - name: Create release
@@ -121,9 +121,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.name }}
-          name: "mlx-server ${{ steps.tag.outputs.name }}"
+          name: "SwiftLM ${{ steps.tag.outputs.name }}"
           body_path: /tmp/release_notes.md
           files: |
-            mlx-server-${{ steps.tag.outputs.name }}-macos-arm64.tar.gz
+            SwiftLM-${{ steps.tag.outputs.name }}-macos-arm64.tar.gz
           draft: false
           prerelease: false

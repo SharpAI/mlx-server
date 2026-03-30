@@ -1,4 +1,4 @@
-# mlx-server API Response Formats
+# SwiftLM API Response Formats
 
 OpenAI-compatible API running at `http://127.0.0.1:5413`.
 No authentication required when started without `--api-key`.

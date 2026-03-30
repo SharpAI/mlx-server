@@ -5,7 +5,7 @@
 //
 // On first run with a new model, the calibrator runs a short benchmark to find
 // the optimal cache limit that maximizes tok/s. The result is stored in
-// ~/.mlx-server/wisdom/<hash>.json and loaded directly on future runs.
+// ~/.swiftlm/wisdom/<hash>.json and loaded directly on future runs.
 //
 // Usage:
 //   let wisdom = try await Calibrator.calibrate(container: container, plan: plan, profile: profile)
@@ -47,7 +47,7 @@ enum Calibrator {
     /// Directory for wisdom files
     private static var wisdomDirectory: URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        return home.appendingPathComponent(".mlx-server/wisdom")
+        return home.appendingPathComponent(".swiftlm/wisdom")
     }
     
     /// Hardware fingerprint: chip + memory + OS
@@ -90,7 +90,7 @@ enum Calibrator {
             decoder.dateDecodingStrategy = .iso8601
             return try decoder.decode(WisdomEntry.self, from: data)
         } catch {
-            print("[mlx-server] ⚠️  Failed to load wisdom: \(error.localizedDescription)")
+            print("[SwiftLM] ⚠️  Failed to load wisdom: \(error.localizedDescription)")
             return nil
         }
     }
@@ -121,7 +121,7 @@ enum Calibrator {
         contextSize: Int = 4096
     ) async throws -> WisdomEntry {
         let startTime = Date()
-        print("[mlx-server] 📊 Calibrating... (this only happens once per model × hardware)")
+        print("[SwiftLM] 📊 Calibrating... (this only happens once per model × hardware)")
         
         // Determine trial cache limits based on available memory
         let systemRAMBytes = Int(ProcessInfo.processInfo.physicalMemory)
@@ -155,7 +155,7 @@ enum Calibrator {
         let maxTokens = 30  // Just enough to measure steady-state decode speed
         
         for (idx, trial) in trials.enumerated() {
-            print("[mlx-server]   Trial \(idx + 1)/\(trials.count): \(trial.label) (\(trial.cacheLimitBytes / (1024*1024))MB)")
+            print("[SwiftLM]   Trial \(idx + 1)/\(trials.count): \(trial.label) (\(trial.cacheLimitBytes / (1024*1024))MB)")
             
             // Set cache limit for this trial
             if trial.cacheLimitBytes > 0 {
@@ -173,13 +173,13 @@ enum Calibrator {
             )
             
             if let result = result {
-                print("[mlx-server]     → \(String(format: "%.1f", result.tokPerSec)) tok/s decode, \(String(format: "%.0f", result.ttftMs))ms TTFT")
+                print("[SwiftLM]     → \(String(format: "%.1f", result.tokPerSec)) tok/s decode, \(String(format: "%.0f", result.ttftMs))ms TTFT")
                 
                 if bestTrial == nil || result.tokPerSec > bestTrial!.tokPerSec {
                     bestTrial = (trial, result.tokPerSec, result.prefillTokPerSec, result.ttftMs)
                 }
             } else {
-                print("[mlx-server]     → failed, skipping")
+                print("[SwiftLM]     → failed, skipping")
             }
         }
         
@@ -209,9 +209,9 @@ enum Calibrator {
         
         try saveWisdom(entry)
         
-        print("[mlx-server] 📊 Calibration complete in \(String(format: "%.1f", elapsed))s")
-        print("[mlx-server]    Winner: \(best.trial.label) → \(String(format: "%.1f", best.tokPerSec)) tok/s")
-        print("[mlx-server]    Saved to ~/.mlx-server/wisdom/")
+        print("[SwiftLM] 📊 Calibration complete in \(String(format: "%.1f", elapsed))s")
+        print("[SwiftLM]    Winner: \(best.trial.label) → \(String(format: "%.1f", best.tokPerSec)) tok/s")
+        print("[SwiftLM]    Saved to ~/.swiftlm/wisdom/")
         
         return entry
     }

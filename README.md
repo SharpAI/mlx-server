@@ -1,4 +1,4 @@
-# ⚡️ mlx-server
+# ⚡️ SwiftLM
 
 A blazingly fast, native Swift inference server that serves [MLX](https://github.com/ml-explore/mlx) models with a strict **OpenAI-compatible API**. 
 
@@ -17,7 +17,7 @@ No Python runtime, no Global Interpreter Lock (GIL), no unnecessary memory copie
 
 ## ⚡️ TurboQuantization: KV Cache Compression
 
-`mlx-server` implements **TurboQuant** (AISTATS/ICLR 2026) for on-the-fly KV cache compression, enabling long-context inference with drastically reduced memory. At 3 bits/coordinate, the KV cache is compressed ~5.8× vs FP16 with near-zero accuracy loss.
+`SwiftLM` implements **TurboQuant** (AISTATS/ICLR 2026) for on-the-fly KV cache compression, enabling long-context inference with drastically reduced memory. At 3 bits/coordinate, the KV cache is compressed ~5.8× vs FP16 with near-zero accuracy loss.
 
 The algorithm runs in two stages per KV vector:
 
@@ -45,7 +45,7 @@ Reference implementation: [`turboquant_plus`](https://github.com/TheTom/turboqua
 
 ## 💻 Tested Hardware & Benchmarks
 
-To reliably run massive 122B parameter MoE models over SSD streaming, `mlx-server` was designed and benchmarked natively on the following hardware:
+To reliably run massive 122B parameter MoE models over SSD streaming, `SwiftLM` was designed and benchmarked natively on the following hardware:
 
 - **Machine**: MacBook Pro, Apple M5 Pro
 - **Memory**: 64 GB Unified Memory
@@ -59,7 +59,7 @@ To reliably run massive 122B parameter MoE models over SSD streaming, `mlx-serve
 ## 🛠️ Quick Start
 
 ### Fastest: Download Pre-built Binary
-The absolute fastest way to get started is to [download the latest pre-compiled macOS binary](https://github.com/SharpAI/mlx-server/releases) directly from the Releases page. Just extract it and run!
+The absolute fastest way to get started is to [download the latest pre-compiled macOS binary](https://github.com/SharpAI/SwiftLM/releases) directly from the Releases page. Just extract it and run!
 
 ### Build from Source
 
@@ -70,7 +70,7 @@ swift build -c release
 ### Run (Downloads model natively on first launch)
 
 ```bash
-.build/release/mlx-server \
+.build/release/SwiftLM \
   --model Qwen3.5-122B-A10B-4bit \
   --stream-experts true \
   --port 5413
@@ -133,7 +133,7 @@ Built entirely on the hard work of the Apple MLX community.
 
 ### 🙏 TurboQuant Credits
 
-The TurboQuant KV cache compression implemented in `mlx-server` is directly based on the following open-source work and research:
+The TurboQuant KV cache compression implemented in `SwiftLM` is directly based on the following open-source work and research:
 
 - **[TheTom/llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant/tree/feature/turboquant-kv-cache)** — The primary reference for the C and Metal GPU implementation. The `turbo-wht.h` Fast Walsh-Hadamard kernel, WHT sign arrays (seed=42), Lloyd-Max centroid tables, and the `ggml-turbo-quant.c` quantize/dequantize logic were ported directly from this repository into our MLX C++ and Metal backend.
 
