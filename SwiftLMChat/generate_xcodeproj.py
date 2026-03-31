@@ -66,6 +66,8 @@ core_sources = [
     ("../Sources/MLXInferenceCore/ChatMessage.swift",          uid(), uid()),
     ("../Sources/MLXInferenceCore/GenerationConfig.swift",     uid(), uid()),
     ("../Sources/MLXInferenceCore/ModelCatalog.swift",         uid(), uid()),
+    ("../Sources/MLXInferenceCore/ModelStorage.swift",         uid(), uid()),
+    ("../Sources/MLXInferenceCore/ModelDownloader.swift",      uid(), uid()),
     ("../Sources/MLXInferenceCore/ModelDownloadManager.swift", uid(), uid()),
     ("../Sources/MLXInferenceCore/InferenceEngine.swift",      uid(), uid()),
 ]
