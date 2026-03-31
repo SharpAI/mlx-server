@@ -7,11 +7,13 @@ struct ModelPickerView: View {
 
     @State private var device = DeviceProfile.current
     @State private var showManagement = false
+    @State private var pendingCellularModelId: String? = nil  // awaiting cellular confirm
 
     private var downloadManager: ModelDownloadManager { engine.downloadManager }
 
+    // iOS uses tighter RAM budget (40%) — macOS uses 75%
     private var recommendedModels: [ModelEntry] {
-        ModelCatalog.recommended(for: device)
+        downloadManager.modelsForDevice()
     }
     private var otherModels: [ModelEntry] {
         ModelCatalog.all.filter { model in
@@ -35,7 +37,7 @@ struct ModelPickerView: View {
                                     downloadStatus: .downloaded(sizeString: downloaded.displaySize),
                                     fitStatus: ModelCatalog.fitStatus(for: entry, on: device),
                                     downloadProgress: downloadManager.activeDownloads[entry.id],
-                                    onTap: { onSelect(entry.id) },
+                                    onTap: { handleModelTap(entry.id) },
                                     onDelete: { try? downloadManager.delete(entry.id) }
                                 )
                             }
@@ -60,7 +62,7 @@ struct ModelPickerView: View {
                                 downloadStatus: downloadStatus(for: model.id),
                                 fitStatus: ModelCatalog.fitStatus(for: model, on: device),
                                 downloadProgress: downloadManager.activeDownloads[model.id],
-                                onTap: { onSelect(model.id) },
+                                onTap: { handleModelTap(model.id) },
                                 onDelete: nil
                             )
                         }
@@ -77,7 +79,7 @@ struct ModelPickerView: View {
                                 downloadStatus: downloadStatus(for: model.id),
                                 fitStatus: ModelCatalog.fitStatus(for: model, on: device),
                                 downloadProgress: downloadManager.activeDownloads[model.id],
-                                onTap: { onSelect(model.id) },
+                                onTap: { handleModelTap(model.id) },
                                 onDelete: nil
                             )
                         }
@@ -103,6 +105,30 @@ struct ModelPickerView: View {
                 ModelManagementView()
                     .environmentObject(engine)
             }
+            // Cellular download warning
+            .confirmationDialog(
+                "Download on Cellular?",
+                isPresented: .init(
+                    get: { pendingCellularModelId != nil },
+                    set: { if !$0 { pendingCellularModelId = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                if let modelId = pendingCellularModelId {
+                    let name = ModelCatalog.all.first(where: { $0.id == modelId })?.displayName ?? modelId
+                    let size = ModelCatalog.all.first(where: { $0.id == modelId }).map {
+                        String(format: "~%.1f GB", $0.ramRequiredGB)
+                    } ?? ""
+                    Button("Download \(size) on Cellular", role: .destructive) {
+                        let id = modelId
+                        pendingCellularModelId = nil
+                        onSelect(id)
+                    }
+                    Button("Cancel", role: .cancel) { pendingCellularModelId = nil }
+                }
+            } message: {
+                Text("This model is large and may use significant cellular data.")
+            }
             .onAppear { downloadManager.refresh() }
         }
         #if os(macOS)
@@ -112,6 +138,21 @@ struct ModelPickerView: View {
 
     private var deviceHeader: some View {
         Section {
+            // Network status banner
+            if downloadManager.isOffline {
+                Label("No internet — downloaded models only.", systemImage: "wifi.slash")
+                    .font(.caption).foregroundStyle(.orange)
+            } else if downloadManager.isOnCellular {
+                Label("Cellular connection — large downloads may incur charges.", systemImage: "antenna.radiowaves.left.and.right")
+                    .font(.caption).foregroundStyle(.orange)
+            }
+
+            // Thermal warning
+            if engine.thermalLevel.isThrottled {
+                Label(engine.thermalLevel.displayString, systemImage: "thermometer.high")
+                    .font(.caption).foregroundStyle(.red)
+            }
+
             HStack(spacing: 16) {
                 VStack(alignment: .leading, spacing: 2) {
                     Label(String(format: "%.0f GB RAM", device.physicalRAMGB), systemImage: "memorychip")
@@ -129,6 +170,17 @@ struct ModelPickerView: View {
                     }
                 }
             }
+        }
+    }
+
+    private func handleModelTap(_ modelId: String) {
+        // Don't download if offline and not already cached
+        if downloadManager.isOffline && !downloadManager.isDownloaded(modelId) { return }
+        // Warn before large cellular downloads
+        if downloadManager.shouldWarnForCellular(modelId) && !downloadManager.isDownloaded(modelId) {
+            pendingCellularModelId = modelId
+        } else {
+            onSelect(modelId)
         }
     }
 

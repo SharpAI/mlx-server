@@ -1,29 +1,30 @@
-// ModelDownloadManager.swift — HuggingFace cache inspection and model lifecycle
-// Manages local model storage: downloaded status, disk size, deletion, persistence.
+// ModelDownloadManager.swift — Orchestrates storage + download + network monitoring
+// Replaces the old single-file manager with the layered ModelStorage + ModelDownloader.
 
 import Foundation
+import Network
 import Combine
 
-/// Represents a locally downloaded model entry.
+// MARK: — Downloaded Model
+
 public struct DownloadedModel: Identifiable, Sendable {
-    public let id: String           // HuggingFace model ID
-    public let cacheDirectory: URL  // Local cache path
-    public let sizeBytes: Int64     // Total bytes on disk
-    public let modifiedDate: Date?  // Last access/modification date
+    public let id: String
+    public let cacheDirectory: URL
+    public let sizeBytes: Int64
+    public let modifiedDate: Date?
 
     public var displaySize: String {
-        let gb = Double(sizeBytes) / 1_073_741_824
-        let mb = Double(sizeBytes) / 1_048_576
-        if gb >= 1.0 { return String(format: "%.1f GB", gb) }
-        return String(format: "%.0f MB", mb)
+        formatBytes(sizeBytes)
     }
 }
 
-/// Download progress for an in-flight download.
+// MARK: — Download Progress (UI-facing)
+
 public struct ModelDownloadProgress: Sendable {
     public let modelId: String
-    public let fractionCompleted: Double  // 0.0–1.0
-    public let speedMBps: Double?         // nil if unknown
+    public let fractionCompleted: Double   // 0.0–1.0
+    public let currentFile: String
+    public let speedMBps: Double?
 
     public var speedString: String {
         guard let s = speedMBps else { return "" }
@@ -32,152 +33,199 @@ public struct ModelDownloadProgress: Sendable {
     public var percentString: String { "\(Int(fractionCompleted * 100))%" }
 }
 
-/// Manages the HuggingFace model cache for SwiftLM Chat.
-/// Thread-safe: all mutations happen on MainActor.
+// MARK: — Network Status
+
+public enum NetworkStatus: Sendable {
+    case unknown
+    case wifi
+    case cellular
+    case offline
+}
+
+// MARK: — ModelDownloadManager
+
 @MainActor
 public final class ModelDownloadManager: ObservableObject {
 
-    // MARK: — Published state
-
+    // MARK: Published state
     @Published public private(set) var downloadedModels: [DownloadedModel] = []
     @Published public private(set) var activeDownloads: [String: ModelDownloadProgress] = [:]
     @Published public private(set) var totalDiskUsageBytes: Int64 = 0
+    @Published public private(set) var networkStatus: NetworkStatus = .unknown
 
-    // MARK: — Persistence
-
+    // MARK: Persistence
     private let lastModelKey = "swiftlm.lastLoadedModelId"
     public var lastLoadedModelId: String? {
         get { UserDefaults.standard.string(forKey: lastModelKey) }
         set { UserDefaults.standard.set(newValue, forKey: lastModelKey) }
     }
 
-    // MARK: — HuggingFace cache paths
+    // MARK: Network monitoring
+    private let monitor = NWPathMonitor()
+    private let monitorQueue = DispatchQueue(label: "com.sharpai.swiftlm.netmonitor")
 
-    /// Primary HF hub cache directory.
-    public static var huggingFaceCacheRoot: URL {
-        // Respect $HF_HUB_CACHE > $HF_HOME > default
-        if let hfCache = ProcessInfo.processInfo.environment["HF_HUB_CACHE"] {
-            return URL(fileURLWithPath: hfCache)
-        }
-        if let hfHome = ProcessInfo.processInfo.environment["HF_HOME"] {
-            return URL(fileURLWithPath: hfHome).appendingPathComponent("hub")
-        }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".cache/huggingface/hub")
+    // MARK: In-flight download tasks
+    private var downloadTasks: [String: Task<Void, Error>] = [:]
+
+    // MARK: iOS RAM budget
+    /// On iOS, use a tighter RAM budget to avoid jetsam (40% of physical RAM).
+    /// On macOS, use 75% (generous, no jetsam).
+    public static var ramBudgetFraction: Double {
+        #if os(iOS)
+        return 0.40
+        #else
+        return 0.75
+        #endif
     }
-
-    /// Convert a HuggingFace model ID to its cache directory name.
-    /// e.g. "mlx-community/Qwen2.5-7B-Instruct-4bit" → "models--mlx-community--Qwen2.5-7B-Instruct-4bit"
-    public static func cacheDirName(for modelId: String) -> String {
-        "models--" + modelId.replacingOccurrences(of: "/", with: "--")
-    }
-
-    /// Returns the cache directory URL for a given model ID, or nil if not found.
-    public static func cacheDirectory(for modelId: String) -> URL? {
-        let dir = huggingFaceCacheRoot.appendingPathComponent(cacheDirName(for: modelId))
-        return FileManager.default.fileExists(atPath: dir.path) ? dir : nil
-    }
-
-    // MARK: — Public API
 
     public init() {
+        startNetworkMonitor()
         refresh()
     }
 
-    /// Re-scan the HuggingFace cache and update downloaded model list.
+    deinit {
+        monitor.cancel()
+    }
+
+    // MARK: — Network Monitoring
+
+    private func startNetworkMonitor() {
+        monitor.pathUpdateHandler = { [weak self] path in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if path.status == .unsatisfied {
+                    self.networkStatus = .offline
+                } else if path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet) {
+                    self.networkStatus = .wifi
+                } else if path.usesInterfaceType(.cellular) {
+                    self.networkStatus = .cellular
+                } else {
+                    self.networkStatus = .unknown
+                }
+            }
+        }
+        monitor.start(queue: monitorQueue)
+    }
+
+    /// True if the current connection is cellular (may warn before large downloads).
+    public var isOnCellular: Bool { networkStatus == .cellular }
+
+    /// True if offline.
+    public var isOffline: Bool { networkStatus == .offline }
+
+    // MARK: — Storage
+
+    /// Re-scan the cache and update published state.
     public func refresh() {
-        let root = Self.huggingFaceCacheRoot
-        guard FileManager.default.fileExists(atPath: root.path) else {
-            downloadedModels = []
-            totalDiskUsageBytes = 0
-            return
+        let scanned = ModelStorage.scanDownloadedModels()
+        downloadedModels = scanned.map { s in
+            DownloadedModel(
+                id: s.modelId,
+                cacheDirectory: s.cacheDirectory,
+                sizeBytes: s.sizeBytes,
+                modifiedDate: s.modifiedDate
+            )
         }
-
-        var found: [DownloadedModel] = []
-        let fm = FileManager.default
-
-        // Enumerate all "models--*" directories
-        guard let contents = try? fm.contentsOfDirectory(
-            at: root, includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else { return }
-
-        for dir in contents {
-            guard dir.lastPathComponent.hasPrefix("models--") else { continue }
-
-            // Map directory name back to model ID
-            let dirName = dir.lastPathComponent
-            let modelId = dirName
-                .replacingOccurrences(of: "^models--", with: "", options: .regularExpression)
-                .replacingOccurrences(of: "--", with: "/")
-
-            // Only include models in our catalog
-            guard ModelCatalog.all.contains(where: { $0.id == modelId }) else { continue }
-
-            let size = directorySize(at: dir)
-            let modDate = (try? dir.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-
-            found.append(DownloadedModel(
-                id: modelId,
-                cacheDirectory: dir,
-                sizeBytes: size,
-                modifiedDate: modDate
-            ))
-        }
-
-        downloadedModels = found.sorted { ($0.modifiedDate ?? .distantPast) > ($1.modifiedDate ?? .distantPast) }
-        totalDiskUsageBytes = found.reduce(0) { $0 + $1.sizeBytes }
+        totalDiskUsageBytes = downloadedModels.reduce(0) { $0 + $1.sizeBytes }
     }
 
-    /// Returns true if the model has been fully downloaded to local cache.
     public func isDownloaded(_ modelId: String) -> Bool {
-        downloadedModels.contains(where: { $0.id == modelId })
+        ModelStorage.isDownloaded(modelId)
     }
 
-    /// Returns the downloaded model entry for a given ID, if available.
     public func downloadedModel(for modelId: String) -> DownloadedModel? {
         downloadedModels.first(where: { $0.id == modelId })
     }
 
-    /// Delete a model from local cache, freeing disk space.
+    /// Delete a model and free disk space.
     public func delete(_ modelId: String) throws {
-        guard let dir = Self.cacheDirectory(for: modelId) else { return }
-        try FileManager.default.removeItem(at: dir)
+        try ModelStorage.delete(modelId)
         refresh()
+        if lastLoadedModelId == modelId { lastLoadedModelId = nil }
     }
 
-    /// Update active download progress (called by InferenceEngine during load).
+    // MARK: — Download
+
+    /// Start downloading a model (iOS only — macOS goes through LLMModelFactory in InferenceEngine.load()).
+    @discardableResult
+    public func startDownload(modelId: String) -> Task<Void, Error> {
+        downloadTasks[modelId]?.cancel()
+
+        let task = Task<Void, Error> {
+            defer {
+                Task { @MainActor [weak self] in
+                    self?.activeDownloads.removeValue(forKey: modelId)
+                }
+            }
+
+            #if !os(macOS)
+            try await ModelDownloader.shared.download(modelId: modelId) { [weak self] fp in
+                Task { @MainActor [weak self] in
+                    self?.activeDownloads[modelId] = ModelDownloadProgress(
+                        modelId: modelId,
+                        fractionCompleted: fp.overallFraction,
+                        currentFile: fp.fileName,
+                        speedMBps: fp.speedBytesPerSec.map { $0 / 1_000_000 }
+                    )
+                }
+            }
+            #endif
+
+            Task { @MainActor [weak self] in
+                self?.activeDownloads.removeValue(forKey: modelId)
+                self?.lastLoadedModelId = modelId
+                self?.refresh()
+            }
+        }
+
+        downloadTasks[modelId] = task
+        return task
+    }
+
+    /// Cancel an in-progress download.
+    public func cancelDownload(modelId: String) {
+        downloadTasks[modelId]?.cancel()
+        downloadTasks.removeValue(forKey: modelId)
+        activeDownloads.removeValue(forKey: modelId)
+    }
+
+    /// Update progress from an external source (e.g. InferenceEngine's loadContainer callback).
     public func updateProgress(_ progress: ModelDownloadProgress) {
         activeDownloads[progress.modelId] = progress
     }
 
-    /// Mark a download as complete.
-    public func completeDownload(modelId: String) {
-        activeDownloads.removeValue(forKey: modelId)
-        refresh()
-        lastLoadedModelId = modelId
-    }
-
-    /// Cancel an active download tracking entry.
-    public func cancelDownload(modelId: String) {
+    /// Clear progress for a model (called on completion or cancellation).
+    public func clearProgress(modelId: String) {
         activeDownloads.removeValue(forKey: modelId)
     }
 
-    // MARK: — Helpers
+    // MARK: — iOS RAM filtering
 
-    private func directorySize(at url: URL) -> Int64 {
-        let fm = FileManager.default
-        guard let enumerator = fm.enumerator(
-            at: url,
-            includingPropertiesForKeys: [.fileSizeKey],
-            options: [.skipsHiddenFiles]
-        ) else { return 0 }
-
-        var total: Int64 = 0
-        for case let fileURL as URL in enumerator {
-            let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-            total += Int64(size)
-        }
-        return total
+    /// Returns models appropriate for this device, applying the platform RAM budget.
+    public func modelsForDevice() -> [ModelEntry] {
+        let device = DeviceProfile.current
+        let usableRAM = device.physicalRAMGB * Self.ramBudgetFraction
+        return ModelCatalog.all.filter { $0.ramRequiredGB <= usableRAM }
     }
+
+    // MARK: — Cellular Download Threshold (bytes)
+
+    /// Models larger than this threshold trigger a cellular warning on iOS.
+    public static let cellularWarnThresholdBytes: Int64 = 200 * 1_024 * 1_024  // 200 MB
+
+    public func shouldWarnForCellular(modelId: String) -> Bool {
+        guard isOnCellular else { return false }
+        guard let entry = ModelCatalog.all.first(where: { $0.id == modelId }) else { return false }
+        let estimatedBytes = Int64(entry.ramRequiredGB * 1_073_741_824)  // rough estimate
+        return estimatedBytes > Self.cellularWarnThresholdBytes
+    }
+}
+
+// MARK: — Helpers
+
+private func formatBytes(_ bytes: Int64) -> String {
+    let gb = Double(bytes) / 1_073_741_824
+    let mb = Double(bytes) / 1_048_576
+    if gb >= 1.0 { return String(format: "%.1f GB", gb) }
+    return String(format: "%.0f MB", mb)
 }

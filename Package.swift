@@ -41,6 +41,7 @@ let package = Package(
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "Hub", package: "swift-transformers"),
             ],
             path: "Sources/MLXInferenceCore",
             swiftSettings: [
