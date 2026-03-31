@@ -772,35 +772,54 @@ actor ServerStats {
 
 actor PromptCache {
     struct CachedState {
+        let tokens: [Int]            // Full token sequence that generated this KV state
         let states: [[MLXArray]]     // Per-layer KV state arrays
         let metaStates: [[String]]   // Per-layer metadata
-        let tokenCount: Int          // Number of cached tokens
     }
 
     private var cached: CachedState?
-    private var cachedTokenHash: Int?
     private var hits: Int = 0
     private var misses: Int = 0
 
-    func save(tokenHash: Int, cache: [KVCache], tokenCount: Int) {
+    /// Save the full prompt token sequence and its KV state.
+    func save(tokens: [Int], cache: [KVCache]) {
         let states = cache.map { $0.state }
         let metaStates = cache.map { $0.metaState }
-        cached = CachedState(states: states, metaStates: metaStates, tokenCount: tokenCount)
-        cachedTokenHash = tokenHash
+        cached = CachedState(tokens: tokens, states: states, metaStates: metaStates)
     }
 
-    func restore(tokenHash: Int, into cache: [KVCache]) -> Int? {
-        guard let cached, cachedTokenHash == tokenHash else {
+    /// Find the longest common prefix between `newTokens` and the cached sequence.
+    /// Restores matched KV state, trims any excess — mirrors llama-server behaviour.
+    /// Returns the number of matched tokens, or nil on a complete miss.
+    func restore(newTokens: [Int], into cache: [KVCache]) -> Int? {
+        guard let cached, !cached.tokens.isEmpty else {
             misses += 1
             return nil
         }
+        // Token-by-token longest common prefix scan
+        var matchLen = 0
+        for (a, b) in zip(cached.tokens, newTokens) {
+            guard a == b else { break }
+            matchLen += 1
+        }
+        guard matchLen > 0 else {
+            misses += 1
+            return nil
+        }
+        // Restore full cached KV state into each layer
         for i in 0..<min(cache.count, cached.states.count) {
             var layer = cache[i]
             layer.state = cached.states[i]
             layer.metaState = cached.metaStates[i]
         }
+        // Trim excess if we only matched a partial prefix
+        let excess = cached.tokens.count - matchLen
+        if excess > 0 {
+            for layer in cache { layer.trim(excess) }
+        }
         hits += 1
-        return cached.tokenCount
+        print("[SwiftLM] \u{1F5C2} Prompt cache HIT: \(matchLen)/\(newTokens.count) tokens reused (\(excess > 0 ? "partial" : "full") match)")
+        return matchLen
     }
 
     func stats() -> (hits: Int, misses: Int) { (hits, misses) }
@@ -910,9 +929,9 @@ func handleChatCompletion(
     let userInput = UserInput(chat: chatMessages, tools: toolSpecs, additionalContext: templateContext)
     let lmInput = try await container.prepare(input: userInput)
 
-    // ── Prompt caching: compute hash for system prompt ──
+    // ── Prompt caching: full token sequence for prefix matching ──
     let promptTokenCount = lmInput.text.tokens.size
-    let systemHash = systemPromptText.hashValue
+    let promptTokens = lmInput.text.tokens.asArray(Int.self)
 
     // llama-server style: announce prefill start
     print("srv  slot_launch: id 0 | prompt=\(promptTokenCount)t | thinking=\(enableThinking) | prefilling...")
@@ -934,45 +953,26 @@ func handleChatCompletion(
             }
         }
 
-        // Try to restore cached system prompt KV state
-        if let cachedCount = await promptCache.restore(tokenHash: systemHash, into: cache) {
-            // Cache hit: skip the cached prefix tokens, process only the rest
+        // Try to restore via token-by-token prefix match (llama-server style)
+        if let cachedCount = await promptCache.restore(newTokens: promptTokens, into: cache) {
+            // Cache hit: KV state is pre-populated up to cachedCount tokens.
+            // Only compute the remaining (new) tokens.
             let remainingTokens = lmInput.text.tokens[cachedCount...]
             let trimmedInput = LMInput(tokens: remainingTokens)
             return try MLXLMCommon.generate(
                 input: trimmedInput, cache: cache, parameters: params, context: context
             )
         } else {
-            // Cache miss: process everything, then save system prompt state
-            // Count system prompt tokens using the tokenizer
-            var systemTokenCount = 0
-            if !systemPromptText.isEmpty {
-                // Approximate system token count from the tokenizer
-                let sysTokens = context.tokenizer.encode(text: systemPromptText)
-                // Add overhead for chat template tokens (BOS, role markers, etc.)
-                systemTokenCount = sysTokens.count + 4
-            }
-
+            // Cache miss: process the full prompt.
             let stream = try MLXLMCommon.generate(
                 input: lmInput, cache: cache, parameters: params, context: context
             )
-
-            // Save cache state after prefill (cache now contains all prompt tokens)
-            if systemTokenCount > 0 {
-                // Save the full prompt cache, but record the system token count
-                // so future requests with different user messages can still benefit
-                // (they'll have the system prefix cached)
-                //
-                // Note: We save after generate() starts, which means the cache
-                // has been populated by the TokenIterator's prepare() call.
-                // We use Task to save asynchronously after the first token.
-                Task {
-                    // Small delay to let prefill complete and populate the cache
-                    try? await Task.sleep(for: .milliseconds(100))
-                    await promptCache.save(tokenHash: systemHash, cache: cache, tokenCount: systemTokenCount)
-                }
+            // Save full prompt tokens + KV state so the next request can prefix-match
+            // any shared prefix (system prompt, conversation history, long documents, etc.)
+            Task {
+                try? await Task.sleep(for: .milliseconds(100))
+                await promptCache.save(tokens: promptTokens, cache: cache)
             }
-
             return stream
         }
     }
