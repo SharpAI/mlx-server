@@ -947,22 +947,25 @@ bool ConvertFP8::is_equivalent(const Primitive& other) const {
 // turbo_quant.h opens its own  namespace mlx::core::fast so it must be
 // included OUTSIDE our namespace block to avoid double-nesting.
 //
-// K record layout (68 bytes per head_dim=128 vector):
+// K record layout per 128-dim sub-group (68 bytes):
 //   [  0.. 47] indices[48]    — 3-bit PolarQuant indices, LSB-packed
 //   [ 48.. 63] qjl_signs[16]  — 1-bit QJL sign bits
 //   [ 64.. 65] norm_fp16[2]   — original L2 norm as fp16
 //   [ 66.. 67] rnorm_fp16[2]  — residual L2 norm as fp16
 //
-// V record layout (50 bytes per head_dim=128 vector):
+// V record layout per 128-dim sub-group (50 bytes):
 //   [  0.. 47] indices[48]    — 3-bit PolarQuant indices, LSB-packed
 //   [ 48.. 49] norm_fp16[2]   — corrected L2 norm as fp16
+//
+// For head_dim=256 we process two consecutive 128-dim sub-groups;
+// the packed record is simply 2x the single-group size.
 
 #include "mlx/fast/turbo_quant.h"  // brings in mlx::core::fast types
 
 namespace {
-// Record byte sizes — must match sdpa_vector.h (Metal decompression kernel).
-static constexpr int TURBO_K_RECORD = 68;
-static constexpr int TURBO_V_RECORD = 50;
+// Record byte sizes per 128-dim sub-group — must match sdpa_vector.h.
+static constexpr int TURBO_K_RECORD = 68;   // one 128-dim K sub-group
+static constexpr int TURBO_V_RECORD = 50;   // one 128-dim V sub-group
 } // anonymous namespace
 
 namespace mlx::core::fast {
@@ -979,62 +982,75 @@ turbo_to_f32(const mlx::core::array& x, mlx::core::StreamOrDevice s) {
 array turbo_encode_k(const array& keys, StreamOrDevice s_) {
   auto s = to_stream(s_);
 
-  if (keys.shape(-1) != ::mlx::core::fast::TURBO_D) {
+  const int head_dim = static_cast<int>(keys.shape(-1));
+  if (head_dim != 128 && head_dim != 256) {
     throw std::invalid_argument(
-        "[turbo_encode_k] last dim (head_dim) must be " +
-        std::to_string(::mlx::core::fast::TURBO_D) + " but got " +
-        std::to_string(keys.shape(-1)));
+        "[turbo_encode_k] last dim (head_dim) must be 128 or 256 but got " +
+        std::to_string(head_dim));
   }
 
-  auto [keys_f32, src] = turbo_to_f32(keys, s);
-  const int N = static_cast<int>(keys_f32.size() / ::mlx::core::fast::TURBO_D);
+  // For D=256 we split each vector into two consecutive 128-dim sub-groups.
+  const int n_subgroups = head_dim / ::mlx::core::fast::TURBO_D;  // 1 or 2
+  const int record_bytes = TURBO_K_RECORD * n_subgroups;
 
-  std::vector<uint8_t> buf(static_cast<size_t>(N) * TURBO_K_RECORD, 0u);
+  auto [keys_f32, src] = turbo_to_f32(keys, s);
+  const int N = static_cast<int>(keys_f32.size() / head_dim);
+
+  std::vector<uint8_t> buf(static_cast<size_t>(N) * record_bytes, 0u);
 
   for (int i = 0; i < N; ++i) {
-    ::mlx::core::fast::TurboQuantK rec =
-        ::mlx::core::fast::turbo_quantize_k(
-            src + i * ::mlx::core::fast::TURBO_D,
-            ::mlx::core::fast::TURBO_D);
-    uint8_t* dst = buf.data() + i * TURBO_K_RECORD;
-    std::memcpy(dst,      rec.indices,     48);
-    std::memcpy(dst + 48, rec.qjl_signs,   16);
-    std::memcpy(dst + 64, &rec.norm_fp16,   2);
-    std::memcpy(dst + 66, &rec.rnorm_fp16,  2);
+    uint8_t* dst = buf.data() + i * record_bytes;
+    for (int g = 0; g < n_subgroups; ++g) {
+      ::mlx::core::fast::TurboQuantK rec =
+          ::mlx::core::fast::turbo_quantize_k(
+              src + i * head_dim + g * ::mlx::core::fast::TURBO_D,
+              ::mlx::core::fast::TURBO_D);
+      uint8_t* sub_dst = dst + g * TURBO_K_RECORD;
+      std::memcpy(sub_dst,      rec.indices,    48);
+      std::memcpy(sub_dst + 48, rec.qjl_signs,  16);
+      std::memcpy(sub_dst + 64, &rec.norm_fp16,   2);
+      std::memcpy(sub_dst + 66, &rec.rnorm_fp16,  2);
+    }
   }
 
   Shape out_shape = keys.shape();
-  out_shape.back() = TURBO_K_RECORD;
+  out_shape.back() = record_bytes;
   return array(buf.data(), out_shape, uint8);
 }
 
 array turbo_encode_v(const array& values, StreamOrDevice s_) {
   auto s = to_stream(s_);
 
-  if (values.shape(-1) != ::mlx::core::fast::TURBO_D) {
+  const int head_dim = static_cast<int>(values.shape(-1));
+  if (head_dim != 128 && head_dim != 256) {
     throw std::invalid_argument(
-        "[turbo_encode_v] last dim (head_dim) must be " +
-        std::to_string(::mlx::core::fast::TURBO_D) + " but got " +
-        std::to_string(values.shape(-1)));
+        "[turbo_encode_v] last dim (head_dim) must be 128 or 256 but got " +
+        std::to_string(head_dim));
   }
 
-  auto [vals_f32, src] = turbo_to_f32(values, s);
-  const int N = static_cast<int>(vals_f32.size() / ::mlx::core::fast::TURBO_D);
+  const int n_subgroups = head_dim / ::mlx::core::fast::TURBO_D;  // 1 or 2
+  const int record_bytes = TURBO_V_RECORD * n_subgroups;
 
-  std::vector<uint8_t> buf(static_cast<size_t>(N) * TURBO_V_RECORD, 0u);
+  auto [vals_f32, src] = turbo_to_f32(values, s);
+  const int N = static_cast<int>(vals_f32.size() / head_dim);
+
+  std::vector<uint8_t> buf(static_cast<size_t>(N) * record_bytes, 0u);
 
   for (int i = 0; i < N; ++i) {
-    ::mlx::core::fast::TurboQuantV rec =
-        ::mlx::core::fast::turbo_quantize_v(
-            src + i * ::mlx::core::fast::TURBO_D,
-            ::mlx::core::fast::TURBO_D);
-    uint8_t* dst = buf.data() + i * TURBO_V_RECORD;
-    std::memcpy(dst,      rec.indices,    48);
-    std::memcpy(dst + 48, &rec.norm_fp16,  2);
+    uint8_t* dst = buf.data() + i * record_bytes;
+    for (int g = 0; g < n_subgroups; ++g) {
+      ::mlx::core::fast::TurboQuantV rec =
+          ::mlx::core::fast::turbo_quantize_v(
+              src + i * head_dim + g * ::mlx::core::fast::TURBO_D,
+              ::mlx::core::fast::TURBO_D);
+      uint8_t* sub_dst = dst + g * TURBO_V_RECORD;
+      std::memcpy(sub_dst,      rec.indices,   48);
+      std::memcpy(sub_dst + 48, &rec.norm_fp16, 2);
+    }
   }
 
   Shape out_shape = values.shape();
-  out_shape.back() = TURBO_V_RECORD;
+  out_shape.back() = record_bytes;
   return array(buf.data(), out_shape, uint8);
 }
 
