@@ -55,54 +55,117 @@ public final class InferenceEngine: ObservableObject {
     @Published public private(set) var state: ModelState = .idle
     @Published public private(set) var thermalLevel: ThermalLevel = .nominal
 
+    /// Whether to automatically unload the model when the app backgrounds
+    /// and reload it when returning to foreground.
+    /// Defaults to true on iOS (prevents jetsam), false on macOS.
+    public var autoOffloadOnBackground: Bool = {
+        #if os(iOS)
+        return true
+        #else
+        return false
+        #endif
+    }()
+
     /// Shared download + storage manager.
     public let downloadManager = ModelDownloadManager()
 
     private var container: ModelContainer?
     private var currentModelId: String?
     private var generationTask: Task<Void, Never>?
-    private var pressureObserver: NSObjectProtocol?
-    private var thermalObserver: NSObjectProtocol?
+
+    // All NotificationCenter observers collected for clean deregistration
+    private var observers: [NSObjectProtocol] = []
+
+    // Track the model ID that was active before we backgrounded,
+    // so we can restore it when returning to foreground.
+    private var backgroundedModelId: String?
 
     public init() {
         setupPressureHandlers()
     }
 
     deinit {
-        if let o = pressureObserver { NotificationCenter.default.removeObserver(o) }
-        if let o = thermalObserver  { NotificationCenter.default.removeObserver(o) }
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
     }
 
     // MARK: — Pressure Handlers
 
     private func setupPressureHandlers() {
-        // iOS memory pressure → unload model weights immediately
         #if canImport(UIKit)
-        pressureObserver = NotificationCenter.default.addObserver(
-            forName: UIApplication.didReceiveMemoryWarningNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                // Only unload if not actively generating
-                if case .generating = self.state { return }
-                self.unload()
-                self.state = .error("Unloaded due to memory pressure. Tap to reload.")
+        // ── REACTIVE: Memory warning (last resort) ────────────────────────────
+        // OS sends this *after* pressure builds. We still handle it as a fallback
+        // in case the proactive unload wasn't triggered (e.g. app was already
+        // under pressure from another process).
+        observers.append(
+            NotificationCenter.default.addObserver(
+                forName: UIApplication.didReceiveMemoryWarningNotification,
+                object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if case .generating = self.state { return }  // don't interrupt mid-stream
+                    self.unload()
+                    self.state = .error("Unloaded due to memory pressure. Tap to reload.")
+                }
             }
-        }
+        )
+
+        // ── PROACTIVE: App will background ────────────────────────────────────
+        // Fire BEFORE iOS hands control back to springboard.
+        // At this moment the process is still fully foregrounded — Metal context
+        // is valid, memory limit hasn't changed. We unload now so iOS never
+        // accumulates memory pressure against us in the background.
+        observers.append(
+            NotificationCenter.default.addObserver(
+                forName: UIApplication.willResignActiveNotification,
+                object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self, self.autoOffloadOnBackground else { return }
+                    // Remember what was loaded so we can restore it
+                    self.backgroundedModelId = self.currentModelId
+                    // Stop any in-flight generation cleanly
+                    self.stopGeneration()
+                    self.unload()
+                    self.state = .idle  // clean slate — no error banner on return
+                }
+            }
+        )
+
+        // ── PROACTIVE: App returned to foreground ─────────────────────────────
+        // Silently reload the model the user was using before they left.
+        // We show .loading state so the chat UI doesn't appear broken.
+        observers.append(
+            NotificationCenter.default.addObserver(
+                forName: UIApplication.didBecomeActiveNotification,
+                object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self, self.autoOffloadOnBackground else { return }
+                    // Prefer the model that was active when we backgrounded;
+                    // fall back to the last persisted model the user chose.
+                    let modelToReload = self.backgroundedModelId
+                        ?? self.downloadManager.lastLoadedModelId
+                    self.backgroundedModelId = nil
+                    if let modelId = modelToReload {
+                        await self.load(modelId: modelId)
+                    }
+                }
+            }
+        )
         #endif
 
-        // Thermal state monitoring (all platforms)
-        thermalObserver = NotificationCenter.default.addObserver(
-            forName: ProcessInfo.thermalStateDidChangeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.updateThermalLevel()
+        // ── Thermal state monitoring (all platforms) ──────────────────────────
+        observers.append(
+            NotificationCenter.default.addObserver(
+                forName: ProcessInfo.thermalStateDidChangeNotification,
+                object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.updateThermalLevel()
+                }
             }
-        }
+        )
         updateThermalLevel()
     }
 

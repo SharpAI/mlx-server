@@ -1065,10 +1065,14 @@ struct ThinkingStateTracker {
 
 // ── Chat Streaming ───────────────────────────────────────────────────────────
 
-/// A lightweight actor-based boolean flag used to coordinate the prefill heartbeat task.
-private actor BoolFlag {
-    private(set) var value: Bool = false
-    func set() { value = true }
+/// Tracks prefill progress: whether it is done, and how many tokens have been processed.
+/// n_past is updated by activePrefillProgressHook (called from LLMModel.prepare after each chunk)
+/// and read by the SSE heartbeat task every 2 s.
+private actor PrefillState {
+    private(set) var done: Bool = false
+    private(set) var nPast: Int = 0
+    func finish() { done = true }
+    func update(nPast: Int) { self.nPast = nPast }
 }
 
 func handleChatStreaming(
@@ -1086,16 +1090,25 @@ func handleChatStreaming(
 ) -> Response {
     let (sseStream, cont) = AsyncStream<String>.makeStream()
 
-    // ── Prefill heartbeat: emit progress events while prompt is being processed ──
-    // This prevents clients from seeing a silent/dead connection during long prefills.
-    let prefillDone = BoolFlag()
+    // ── Prefill heartbeat: emit llama-server-style slot_update progress every 2 s ──
+    // n_past is updated by activePrefillProgressHook in LLMModel.prepare() after each
+    // 512-token chunk; single-chunk prompts only show elapsed_seconds.
+    let prefillState = PrefillState()
+    activePrefillProgressHook = { nPast, _ in
+        Task { await prefillState.update(nPast: nPast) }
+    }
     Task {
         var elapsed = 0
-        while await !prefillDone.value {
+        while await !prefillState.done {
             try? await Task.sleep(for: .seconds(2))
-            if await !prefillDone.value {
+            if await !prefillState.done {
                 elapsed += 2
-                _ = cont.yield(ssePrefillChunk(modelId: modelId, promptTokens: promptTokenCount, elapsedSeconds: elapsed))
+                let nPast = await prefillState.nPast
+                _ = cont.yield(ssePrefillChunk(
+                    modelId: modelId,
+                    nPast: nPast,
+                    promptTokens: promptTokenCount,
+                    elapsedSeconds: elapsed))
             }
         }
     }
@@ -1121,7 +1134,9 @@ func handleChatStreaming(
                 }
                 // Signal first token — stops the prefill heartbeat task
                 if firstToken {
-                    await prefillDone.set()
+                    // First decode token: stop heartbeat and clear the prefill progress hook
+                    activePrefillProgressHook = nil
+                    await prefillState.finish()
                     let prefillDur = Date().timeIntervalSince(prefillStart)
                     let prefillTokPerSec = prefillDur > 0 ? Double(promptTokenCount) / prefillDur : 0
                     print("srv  slot update: id 0 | prefill done | n_tokens=\(promptTokenCount), t=\(String(format: "%.2f", prefillDur))s, \(String(format: "%.1f", prefillTokPerSec))t/s")
@@ -1175,7 +1190,8 @@ func handleChatStreaming(
                 toolCallIndex += 1
 
             case .info(let info):
-                await prefillDone.set()
+                activePrefillProgressHook = nil
+                await prefillState.finish()
                 if !stopped {
                     var reason: String
                     switch info.stopReason {
@@ -1711,7 +1727,13 @@ func sseChunk(modelId: String, reasoningContent: String?, content: String?, fini
 
 /// Prefill-progress heartbeat chunk — emitted every 2s while the server is processing the prompt.
 /// Uses object type "prefill_progress" so clients can filter it without confusing it with real tokens.
-func ssePrefillChunk(modelId: String, promptTokens: Int, elapsedSeconds: Int) -> String {
+/// Format mirrors llama-server's slot_update event:
+///   n_past          : tokens evaluated so far (real value from chunked prefill, or 0 for single-chunk)
+///   n_prompt_tokens : total prompt token count
+///   fraction        : n_past / n_prompt_tokens (0.0–1.0), useful for progress bars
+///   elapsed_seconds : wall-clock time since the request started
+func ssePrefillChunk(modelId: String, nPast: Int = 0, promptTokens: Int, elapsedSeconds: Int) -> String {
+    let fraction = promptTokens > 0 ? Double(nPast) / Double(promptTokens) : 0.0
     let chunk: [String: Any] = [
         "id": "prefill-\(UUID().uuidString)",
         "object": "prefill_progress",
@@ -1719,7 +1741,9 @@ func ssePrefillChunk(modelId: String, promptTokens: Int, elapsedSeconds: Int) ->
         "model": modelId,
         "prefill": [
             "status": "processing",
-            "prompt_tokens": promptTokens,
+            "n_past": nPast,
+            "n_prompt_tokens": promptTokens,
+            "fraction": fraction,
             "elapsed_seconds": elapsedSeconds
         ]
     ]
