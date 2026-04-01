@@ -117,18 +117,20 @@ cd SwiftLM
 swift build -c release
 ```
 
-`default.metallib` is a pre-built artifact inside the `mlx-swift` submodule at:
-`LocalPackages/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/kernels/default.metallib`
-
-Copy it next to the binary before running:
+`default.metallib` is a pre-built artifact inside the `mlx-swift` submodule, version-matched to the Swift binary. Copy it next to the binary before running:
 
 ```bash
-cp LocalPackages/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/kernels/default.metallib .build/release/
+cp LocalPackages/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/kernels/default.metallib \
+   .build/release/
+
 .build/release/SwiftLM \
   --model mlx-community/Qwen3.5-122B-A10B-4bit \
   --stream-experts \
   --port 5413
 ```
+
+> **⚠️ Do NOT use Python's `mlx-metal` package as a source for `mlx.metallib`.**  
+> While `uv run --with mlx-metal python -c "...shutil.copy(metallib, ...)"` will get the server to start, the pip `mlx-metal` package is a **different version** of MLX than what this binary was compiled against. The version mismatch causes GPU kernel ABI corruption during inference, producing a `freed pointer was not the last allocation` crash. Always use the metallib from `LocalPackages/mlx-swift/` — it is the only version-matched artifact for this build.
 
 *(Add `--stream-experts` when running oversized MoE models like Qwen3.5 122B to bypass macOS virtual memory swapping and stream expert layers directly from NVMe.)*
 
