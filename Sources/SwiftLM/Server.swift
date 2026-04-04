@@ -972,7 +972,7 @@ func handleChatCompletion(
         let textContent = msg.textContent
         let images = msg.extractImages()
         switch msg.role {
-        case "system":
+        case "system", "developer":
             chatMessages.append(.system(textContent, images: images))
             systemPromptText += textContent
         case "assistant":
