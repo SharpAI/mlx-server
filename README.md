@@ -83,6 +83,42 @@ Benchmark results for `gemma-4-26b-a4b-it-4bit` (26B MoE, 4-bit) on M5 Pro 64 GB
 
 ---
 
+## 📱 SwiftLM Chat — iOS App
+
+<p align="center">
+  <img src="docs/demo.gif" width="320" alt="SwiftLM Chat iOS demo" />
+</p>
+
+A native iPhone & iPad companion app that downloads MLX models directly from HuggingFace and runs inference on-device via MLX Swift.
+
+### Features
+- **Tab UI**: Chat · Models · Settings
+- **Live download progress** with speed indicator and circular progress ring
+- **Model catalog**: Qwen3, Phi-3.5, Mistral, Llama — with on-device RAM fit indicators
+- **HuggingFace search** — find any `mlx-community` model by name
+- **Context-aware empty states** — downloading ring, loading spinner, idle prompt
+- **iOS lifecycle hardened** — model unload only fires on true background (not notification banners); 30-second grace period on app-switch
+
+> 📱 **Running live on iPhone 13 Pro (6 GB)** — no Python, no server, no GIL. Pure on-device MLX inference via Metal GPU.
+
+### Build & Run (iOS)
+
+```bash
+cd SwiftLMChat
+python3 generate_xcodeproj.py       # Generates SwiftLMChat.xcodeproj
+open SwiftLMChat.xcodeproj
+```
+
+Then in Xcode:
+1. Select the **SwiftLMChat** target → **Signing & Capabilities**
+2. Set your **Team** (your Apple Developer account)
+3. Select your iPhone as the run destination
+4. ⌘R to build and run
+
+> **Note for contributors**: The `.xcodeproj` is git-ignored (it contains your personal Team ID). Run `generate_xcodeproj.py` after cloning to regenerate it locally. Your Team ID is never committed.
+
+---
+
 ## ⚡️ TurboQuantization: KV Cache Compression
 
 `SwiftLM` implements a **hybrid V2+V3 TurboQuant architecture** for on-the-fly KV cache compression. At roughly ~3.6 bits per coordinate overall, the KV cache is compressed ~3.5× vs FP16 with near-zero accuracy loss.
@@ -151,46 +187,6 @@ python3 tests/run_4models_benchmark.py
 > **🧠 How it works:** SwiftLM implements **Chunked Prefill** (controlled via `--prefill-size`, defaulting to 512). This is functionally equivalent to `llama.cpp`'s `--batch-size` parameter and mirrors the [`mlx-lm` Python library](https://github.com/ml-explore/mlx/tree/main/mlx_lm)'s reference implementation approach to preventing $O(N^2)$ Unified Memory over-allocation during massive sequence parsing.
 
 > **⚠️ Quantization Disclaimer**: While heavier quantization shrinks the required memory footprint, **4-bit quantization** remains the strict production standard for MoE models. Our metrics indicated that aggressive 2-bit quantization heavily destabilizes JSON grammars—routinely producing broken keys like `\name\` instead of `"name"`—which systematically breaks OpenAI-compatible tool calling.
-
----
-
-## 📱 SwiftLM Chat — iOS App
-
-<p align="center">
-  <img src="docs/demo.gif" width="320" alt="SwiftLM Chat iOS demo" />
-</p>
-
-A native iPhone & iPad companion app that downloads MLX models directly from HuggingFace and runs inference on-device via MLX Swift.
-
-### Features
-- **Tab UI**: Chat · Models · Settings
-- **Live download progress** with speed indicator and circular progress ring
-- **Model catalog**: Qwen3, Phi-3.5, Mistral, Llama — with on-device RAM fit indicators
-- **HuggingFace search** — find any `mlx-community` model by name
-- **Context-aware empty states** — downloading ring, loading spinner, idle prompt
-- **iOS lifecycle hardened** — model unload only fires on true background (not notification banners); 30-second grace period on app-switch
-
-> 📱 **Running live on iPhone 13 Pro (6 GB)** — no Python, no server, no GIL. Pure on-device MLX inference via Metal GPU.
-
-### Build & Run (iOS)
-
-```bash
-cd SwiftLMChat
-python3 generate_xcodeproj.py       # Generates SwiftLMChat.xcodeproj
-open SwiftLMChat.xcodeproj
-```
-
-Then in Xcode:
-1. Select the **SwiftLMChat** target → **Signing & Capabilities**
-2. Set your **Team** (your Apple Developer account)
-3. Select your iPhone as the run destination
-4. ⌘R to build and run
-
-> **Note for contributors**: The `.xcodeproj` is git-ignored (it contains your personal Team ID). Run `generate_xcodeproj.py` after cloning to regenerate it locally. Your Team ID is never committed.
-
----
-
-
 
 ---
 
