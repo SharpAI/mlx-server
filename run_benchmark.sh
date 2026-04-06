@@ -44,10 +44,24 @@ if [ "$suite_opt" == "3" ]; then
             name=$(echo ${models[$i]} | sed 's/models--//' | sed 's/--/\//g')
             echo "$((i+1))) $name ($size)"
         done
-        echo "$(( ${#models[@]} + 1 ))) Quit"
+        echo "$(( ${#models[@]} + 1 ))) Delete ALL Models"
+        echo "$(( ${#models[@]} + 2 ))) Quit"
         
-        read -p "Select a model to delete (1-$(( ${#models[@]} + 1 ))): " del_opt
-        if [[ "$del_opt" =~ ^[0-9]+$ ]] && [ "$del_opt" -gt 0 ] && [ "$del_opt" -le "${#models[@]}" ]; then
+        read -p "Select a model to delete (1-$(( ${#models[@]} + 2 ))): " del_opt
+        
+        if [ "$del_opt" == "$(( ${#models[@]} + 1 ))" ]; then
+            echo ""
+            read -p "⚠️ Are you sure you want to delete ALL models? This will free up significant space. (y/N): " confirm_all
+            if [[ "$confirm_all" =~ ^[Yy]$ ]]; then
+                echo "Deleting ALL models in $CACHE_DIR..."
+                rm -rf models--*
+                echo "✅ All models deleted."
+                exit 0
+            else
+                echo "Canceled."
+                continue
+            fi
+        elif [[ "$del_opt" =~ ^[0-9]+$ ]] && [ "$del_opt" -gt 0 ] && [ "$del_opt" -le "${#models[@]}" ]; then
             target_dir="${models[$((del_opt-1))]}"
             echo "Deleting $target_dir..."
             rm -rf "$target_dir"
