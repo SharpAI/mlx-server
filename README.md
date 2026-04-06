@@ -12,7 +12,7 @@ No Python runtime, no Global Interpreter Lock (GIL), no unnecessary memory copie
 
 ## 📊 Performance: Gemma 4-26B on Apple Silicon
 
-Benchmark results for `gemma-4-26b-a4b-it-4bit` (26B MoE, 4-bit) on M5 Pro 64 GB. Full results and methodology at **[profiling_results.md](profiling_results.md)**.
+Benchmark results for `gemma-4-26b-a4b-it-4bit` (26B MoE, 4-bit) on M5 Pro 64 GB.
 
 ### Headline Numbers
 
@@ -32,12 +32,10 @@ Benchmark results for `gemma-4-26b-a4b-it-4bit` (26B MoE, 4-bit) on M5 Pro 64 GB
 
 Run the benchmark on your device:
 ```bash
-python3 scripts/profiling/profile_runner.py \
-  --model gemma-4-26b-a4b-it-4bit \
-  --contexts "512,40000,100000"
+./run_benchmark.sh
 ```
 
-> We welcome PRs with results from other Apple Silicon devices! See [profiling_results.md](profiling_results.md#contributing-your-results) for details.
+> The interactive script lets you pick a model and context sizes. Results are saved to `profiling_results_<hostname>.md` with a rich console visualization.
 
 ---
 
@@ -155,40 +153,38 @@ Then in Xcode:
 ### Fastest: Download Pre-built Binary
 
 Download the latest release tarball from the [Releases page](https://github.com/SharpAI/SwiftLM/releases).
-The archive is **self-contained** — `default.metallib` is bundled alongside the binary.
+The archive is **self-contained** — `mlx.metallib` is bundled alongside the binary.
 
 ```bash
 tar -xzf SwiftLM-<version>-macos-arm64.tar.gz
-
-# Run from the extracted directory — default.metallib must be co-located with the binary
 ./SwiftLM --model mlx-community/Qwen2.5-3B-Instruct-4bit --port 5413
 ```
 
-> **⚠️ Metal GPU Error?** If you see `Failed to load the default metallib`, it means `default.metallib` is missing from the directory you are running `SwiftLM` from. Make sure you run the binary **from the extracted folder** and do not move the binary without also moving `default.metallib` alongside it.
+> **⚠️ Metal GPU Error?** If you see `Failed to load the default metallib`, make sure `mlx.metallib` is co-located with the `SwiftLM` binary.
 
 ### Build from Source
 
+The build script handles everything: submodules, cmake, Metal kernel compilation, and the Swift build.
+
 ```bash
-# Must clone recursively — default.metallib ships inside the mlx-swift submodule
 git clone --recursive https://github.com/SharpAI/SwiftLM
 cd SwiftLM
-swift build -c release
+./build.sh
 ```
 
-`default.metallib` is a pre-built artifact inside the `mlx-swift` submodule, version-matched to the Swift binary. Copy it next to the binary before running:
+This will:
+1. Initialize git submodules
+2. Install `cmake` via Homebrew (if not already installed)
+3. Compile `mlx.metallib` from the Metal kernel sources
+4. Build the `SwiftLM` binary in release mode
 
+Then run:
 ```bash
-cp LocalPackages/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/kernels/default.metallib \
-   .build/release/
-
 .build/release/SwiftLM \
   --model mlx-community/Qwen3.5-122B-A10B-4bit \
   --stream-experts \
   --port 5413
 ```
-
-> **⚠️ Do NOT use Python's `mlx-metal` package as a source for `mlx.metallib`.**  
-> While `uv run --with mlx-metal python -c "...shutil.copy(metallib, ...)"` will get the server to start, the pip `mlx-metal` package is a **different version** of MLX than what this binary was compiled against. The version mismatch causes GPU kernel ABI corruption during inference, producing a `freed pointer was not the last allocation` crash. Always use the metallib from `LocalPackages/mlx-swift/` — it is the only version-matched artifact for this build.
 
 *(Add `--stream-experts` when running oversized MoE models like Qwen3.5 122B to bypass macOS virtual memory swapping and stream expert layers directly from NVMe.)*
 
@@ -241,9 +237,7 @@ curl http://localhost:5413/v1/chat/completions \
 - Xcode Command Line Tools
 - Metal Toolchain (`xcodebuild -downloadComponent MetalToolchain`)
 
-## 📖 Development Journal & The "Aha!" Moment
-
-The stabilization of the Gemma 4 inference engine on Apple Silicon is fully chronicled in our [Development Journal](journal.md).
+## 📖 The "Aha!" Moment
 
 **The "2+2=4" Aha Moment**: During development, we encountered a severe "silent failure" where the model would successfully load and evaluate all 32 layers at high speed, but generate nothing but infinite whitespace. The model logits showed the correct *shape* but the wrong *magnitudes*. 
 
