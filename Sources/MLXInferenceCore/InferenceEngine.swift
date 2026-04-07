@@ -7,6 +7,7 @@ import MLXLLM
 import MLXLMCommon
 import Hub
 import Tokenizers
+import MLXHuggingFace
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -51,6 +52,13 @@ public struct GenerationToken: Sendable {
 }
 
 // MARK: — InferenceEngine
+
+struct HubDownloader: Downloader {
+    let hub: HubApi
+    func download(id: String, revision: String?, matching patterns: [String], useLatest: Bool, progressHandler: @Sendable @escaping (Progress) -> Void) async throws -> URL {
+        return try await hub.snapshot(from: id, matching: patterns, progressHandler: progressHandler)
+    }
+}
 
 @MainActor
 public final class InferenceEngine: ObservableObject {
@@ -226,6 +234,7 @@ public final class InferenceEngine: ObservableObject {
 
         do {
             let hub = HubApi(downloadBase: ModelStorage.cacheRoot)
+            let downloader = HubDownloader(hub: hub)
 
             // For MoE models, enable expert streaming before loading so
             // loadWeights() initialises ExpertStreamerManager correctly.
@@ -250,7 +259,8 @@ public final class InferenceEngine: ObservableObject {
             }
 
             container = try await LLMModelFactory.shared.loadContainer(
-                hub: hub,
+                from: downloader,
+                using: #huggingFaceTokenizerLoader(),
                 configuration: config
             ) { [weak self] progress in
                 Task { @MainActor in
