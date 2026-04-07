@@ -1,3 +1,6 @@
 [submodule "mlx-swift-lm"]
 	path = mlx-swift-lm
 	url = https://github.com/SharpAI/mlx-swift-lm.git
+[submodule "LocalPackages/mlx-swift"]
+	path = LocalPackages/mlx-swift
+	url = https://github.com/SharpAI/mlx-swift

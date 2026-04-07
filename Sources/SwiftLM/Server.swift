@@ -1259,6 +1259,10 @@ func handleChatStreaming(
         var stopped = false
         var firstToken = true
         var tracker = ThinkingStateTracker()
+        
+        // ── JSON mode streaming: buffer early tokens to strip hallucinated prefixes ──
+        var jsonBuffering = jsonMode
+        var jsonBuffer = ""
 
         for await generation in stream {
             if stopped { break }
@@ -1285,6 +1289,38 @@ func handleChatStreaming(
                 }
                 print(text, terminator: "")
                 fflush(stdout)
+
+                // ── JSON mode buffering: accumulate early tokens, strip prefix, then flush ──
+                if jsonBuffering {
+                    jsonBuffer += text
+                    let trimmed = jsonBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let enoughTokens = completionTokenCount >= 3
+                    let hitMax = completionTokenCount >= 32
+                    let hasDoubleBrace = enoughTokens && trimmed.hasPrefix("{") && trimmed.dropFirst().contains("{")
+
+                    if hitMax || hasDoubleBrace {
+                        var cleaned = trimmed
+                        if hasDoubleBrace {
+                            if let firstBrace = cleaned.firstIndex(of: "{") {
+                                let afterFirst = cleaned.index(after: firstBrace)
+                                if let secondBrace = cleaned[afterFirst...].firstIndex(of: "{") {
+                                    cleaned = String(cleaned[secondBrace...])
+                                }
+                            }
+                        }
+                        let (rText, cText) = enableThinking ? tracker.process(cleaned) : ("", cleaned)
+                        if !rText.isEmpty || !cText.isEmpty {
+                            cont.yield(sseChunk(
+                                modelId: modelId,
+                                reasoningContent: rText.isEmpty ? nil : rText,
+                                content: cText.isEmpty ? nil : cText,
+                                finishReason: nil
+                            ))
+                        }
+                        jsonBuffering = false
+                    }
+                    continue  // skip normal emit while buffering or just flushed
+                }
 
                 // ── Route text through thinking state machine ──
                 let (reasoningText, contentText) = enableThinking

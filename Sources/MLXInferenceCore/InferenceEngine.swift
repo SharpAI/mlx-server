@@ -65,6 +65,7 @@ private struct TransformersTokenizerBridge: MLXLMCommon.Tokenizer, Sendable {
     }
 }
 
+
 // MARK: — Model State
 
 public enum ModelState: Equatable, Sendable {

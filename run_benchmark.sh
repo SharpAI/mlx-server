@@ -138,7 +138,7 @@ if [ "$suite_opt" == "2" ]; then
     echo "Starting Server in background..."
     killall SwiftLM 2>/dev/null
     mkdir -p tmp
-    $BIN --model "$FULL_MODEL" --port 5431 --turbo-kv --stream-experts --ctx-size 16384 > ./tmp/regression_server.log 2>&1 &
+    $BIN --model "$FULL_MODEL" --port 5431 --stream-experts --ctx-size 16384 > ./tmp/regression_server.log 2>&1 &
     SERVER_PID=$!
     
     echo "Waiting for server to be ready on port 5431 (this may take a minute if downloading)..."
@@ -175,7 +175,7 @@ if [ "$suite_opt" == "3" ]; then
     echo "Starting Server in background..."
     killall SwiftLM 2>/dev/null
     mkdir -p tmp
-    $BIN --model "$FULL_MODEL" --port 5431 --turbo-kv --stream-experts --ctx-size 8192 > ./tmp/homesec_server.log 2>&1 &
+    $BIN --model "$FULL_MODEL" --port 5431 --stream-experts --ctx-size 8192 > ./tmp/homesec_server.log 2>&1 &
     SERVER_PID=$!
     
     echo "Waiting for server to be ready on port 5431 (this may take a minute if downloading)..."
@@ -187,8 +187,21 @@ if [ "$suite_opt" == "3" ]; then
     echo ""
     echo "Server is up! Executing DeepCamera HomeSec Benchmark..."
     
+    LOCAL_BENCHMARK="./homesec-benchmark"
+    BENCHMARK_DIR="$LOCAL_BENCHMARK/skills/analysis/home-security-benchmark"
+    if [ ! -d "$BENCHMARK_DIR" ]; then
+        echo "HomeSec benchmark skill not found locally. Cloning thinly via git sparse-checkout..."
+        rm -rf "$LOCAL_BENCHMARK"
+        git clone --filter=blob:none --no-checkout https://github.com/SharpAI/DeepCamera.git "$LOCAL_BENCHMARK"
+        pushd "$LOCAL_BENCHMARK" > /dev/null
+        git sparse-checkout init --cone
+        git sparse-checkout set skills/analysis/home-security-benchmark
+        git checkout master 2>/dev/null || git checkout main
+        popd > /dev/null
+    fi
+    
     # Run the benchmark against the LLM gateway. Not specifying --vlm disables VLM tests.
-    node ../DeepCamera/skills/analysis/home-security-benchmark/scripts/run-benchmark.cjs --gateway http://127.0.0.1:5431 --out ./tmp/benchmarks
+    node "$BENCHMARK_DIR/scripts/run-benchmark.cjs" --gateway http://127.0.0.1:5431 --out ./tmp/benchmarks
     
     echo ""
     echo "Cleaning up..."

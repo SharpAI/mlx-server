@@ -10,8 +10,10 @@ echo ""
 echo "=> [1/4] Initializing submodules..."
 git submodule update --init --recursive
 
-# --- 2. Check for cmake ---
+# --- 2. Check for cmake and resolve Swift dependencies ---
 echo ""
+echo "=> [2/4] Checking dependencies and resolving packages..."
+swift package resolve
 echo "=> [2/4] Checking build dependencies..."
 if ! command -v cmake &> /dev/null; then
     echo "cmake not found. Installing via Homebrew..."
@@ -28,7 +30,7 @@ echo "   cmake: $(cmake --version | head -1)"
 echo ""
 echo "=> [3/4] Building Metal kernels (mlx.metallib)..."
 
-MLX_SRC="LocalPackages/mlx-swift/Source/Cmlx/mlx"
+MLX_SRC=".build/checkouts/mlx-swift/Source/Cmlx/mlx"
 METALLIB_BUILD_DIR=".build/metallib_build"
 METALLIB_DEST=".build/arm64-apple-macosx/release"
 
