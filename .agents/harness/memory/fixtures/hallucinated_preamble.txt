@@ -1,0 +1,12 @@
+Here is the JSON you requested master:
+
+```json
+{
+    "extractions": [
+        {"insight": "User prefers dark mode interfaces", "confidence": 0.85},
+        {"insight": "User is building an AI security system", "confidence": 0.95}
+    ]
+}
+```
+
+And a quick reminder to eat your vegetables! Hope this helps 😊

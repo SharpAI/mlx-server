@@ -1,10 +1,14 @@
 // ModelManagementView.swift — Disk usage overview and model deletion
 import SwiftUI
+#if canImport(MLXInferenceCore)
+import MLXInferenceCore
+#endif
 
 struct ModelManagementView: View {
     @EnvironmentObject private var engine: InferenceEngine
     @Environment(\.dismiss) private var dismiss
     @State private var showDeleteAll = false
+    @State private var showHFSearch = false
     @State private var deletionError: String? = nil
 
     private var dm: ModelDownloadManager { engine.downloadManager }
@@ -52,6 +56,29 @@ struct ModelManagementView: View {
             }, message: {
                 Text(deletionError ?? "")
             })
+            .sheet(isPresented: $showHFSearch) {
+                NavigationStack {
+                    ZStack {
+                        #if os(macOS)
+                        Color(nsColor: .windowBackgroundColor).ignoresSafeArea()
+                        #else
+                        Color(hue: 0.67, saturation: 0.20, brightness: 0.07).ignoresSafeArea()
+                        #endif
+                        
+                        // We must duplicate this manually wrapped view component from ModelPickerView
+                        HFSearchTab(onSelect: { id in
+                            showHFSearch = false
+                            Task { await engine.load(modelId: id) }
+                        })
+                    }
+                    .navigationTitle("Search HuggingFace Hub")
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Close") { showHFSearch = false }
+                        }
+                    }
+                }
+            }
         }
         #if os(macOS)
         .frame(minWidth: 440, minHeight: 500)
@@ -62,6 +89,22 @@ struct ModelManagementView: View {
 
     private var modelList: some View {
         List {
+            // Central HF Search Entry
+            Section {
+                Button { showHFSearch = true } label: {
+                    HStack {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundStyle(.blue)
+                        Text("Search HuggingFace MLX Models")
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                }
+                .buttonStyle(.plain)
+            }
+            
             // Storage summary card
             Section {
                 storageCard
@@ -233,8 +276,18 @@ struct ModelManagementView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
-            Button("Browse Models") { dismiss() }
-                .buttonStyle(.borderedProminent)
+            
+            Button { showHFSearch = true } label: {
+                HStack {
+                    Image(systemName: "magnifyingglass")
+                    Text("Search HuggingFace MLX Models")
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            
+            Button("Cancel") { dismiss() }
+                .foregroundStyle(.secondary)
+                .padding(.top, 4)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

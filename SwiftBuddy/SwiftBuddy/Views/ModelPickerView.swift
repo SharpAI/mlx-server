@@ -1,5 +1,8 @@
 // ModelPickerView.swift — Model selection with HuggingFace live search
 import SwiftUI
+#if canImport(MLXInferenceCore)
+import MLXInferenceCore
+#endif
 
 // MARK: — Main Picker View
 
@@ -7,50 +10,35 @@ struct ModelPickerView: View {
     @EnvironmentObject private var engine: InferenceEngine
     let onSelect: (String) -> Void
 
-    @State private var tab: Tab = .catalog
+    @Environment(\.dismiss) private var dismiss
+    @State private var showHFSearch = false
     @State private var device = DeviceProfile.current
     @State private var showManagement = false
     @State private var pendingCellularModelId: String? = nil
 
     private var downloadManager: ModelDownloadManager { engine.downloadManager }
 
-    enum Tab: String, CaseIterable {
-        case catalog = "Catalog"
-        case search  = "Search HF"
-    }
-
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                // ── Tab picker ─────────────────────────────────────────────
-                Picker("Tab", selection: $tab) {
-                    ForEach(Tab.allCases, id: \.self) {
-                        Text($0.rawValue).tag($0)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal)
-                .padding(.vertical, 8)
-
-                // ── Content ────────────────────────────────────────────────
-                Group {
-                    if tab == .catalog {
-                        CatalogTab(
-                            downloadManager: downloadManager,
-                            device: device,
-                            onTap: handleModelTap,
-                            showManagement: $showManagement
-                        )
-                    } else {
-                        HFSearchTab(onSelect: onSelect)
-                    }
-                }
+                CatalogTab(
+                    downloadManager: downloadManager,
+                    device: device,
+                    onTap: handleModelTap,
+                    showManagement: $showManagement,
+                    onSearchHFTap: { showHFSearch = true }
+                )
             }
             .navigationTitle("Models")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") {
+                        dismiss()
+                    }
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         showManagement = true
@@ -79,6 +67,25 @@ struct ModelPickerView: View {
                 Text("This model is large. Downloading over cellular may incur data charges.")
             }
         }
+        .sheet(isPresented: $showHFSearch) {
+            NavigationStack {
+                ZStack {
+                    SwiftBuddyTheme.background.ignoresSafeArea()
+                    HFSearchTab(onSelect: { id in
+                        showHFSearch = false
+                        onSelect(id)
+                    })
+                }
+                .navigationTitle("Search HuggingFace")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { showHFSearch = false }
+                            .foregroundStyle(SwiftBuddyTheme.accent)
+                    }
+                }
+            }
+            .environmentObject(engine)
+        }
     }
 
     private func handleModelTap(_ modelId: String) {
@@ -98,6 +105,7 @@ private struct CatalogTab: View {
     let device: DeviceProfile
     let onTap: (String) -> Void
     @Binding var showManagement: Bool
+    let onSearchHFTap: () -> Void
 
     private var recommendedModels: [ModelEntry] { downloadManager.modelsForDevice() }
     private var otherModels: [ModelEntry] {
@@ -161,6 +169,21 @@ private struct CatalogTab: View {
                     }
                 }
             }
+            
+            Section {
+                Button(action: onSearchHFTap) {
+                    HStack {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundStyle(.blue)
+                        Text("Search HuggingFace MLX models")
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                    }
+                    .padding(14)
+                    .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+            }
         }
         .listStyle(.inset)
     }
@@ -218,10 +241,20 @@ struct HFSearchTab: View {
                         .buttonStyle(.plain)
                     }
                 }
-                .padding(10)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                .padding(8)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
 
-                // Sort chips
+                Toggle("Strict MLX Formatting Only", isOn: $service.strictMLX)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .toggleStyle(.switch)
+                    .padding(.horizontal, 4)
+                    .onChange(of: service.strictMLX) { _, _ in
+                        service.search(query: query, sort: sort)
+                    }
+
+                // ─────────────────────────────────────────────────────────────
+                // Sort tags (Trending, Likes, etc)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(HFSortOption.allCases, id: \.self) { option in

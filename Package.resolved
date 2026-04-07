@@ -289,6 +289,15 @@
       }
     },
     {
+      "identity" : "swiftsoup",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/scinfu/SwiftSoup.git",
+      "state" : {
+        "revision" : "6c7915e16f729857aec3e99068c361e58a00ed68",
+        "version" : "2.13.4"
+      }
+    },
+    {
       "identity" : "yyjson",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/ibireme/yyjson.git",

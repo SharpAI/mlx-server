@@ -1,0 +1,16 @@
+[
+  {
+    "id": "someone/mistral-mlx-finetune",
+    "likes": 5,
+    "downloads": 120,
+    "pipeline_tag": "text-generation",
+    "tags": ["text-generation"]
+  },
+  {
+    "id": "community-user/llama3-mlx-quantized",
+    "likes": 12,
+    "downloads": 450,
+    "pipeline_tag": "text-generation",
+    "tags": ["text-generation", "quantized"]
+  }
+]

@@ -9,12 +9,18 @@ import SwiftUI
 public enum SwiftBuddyTheme {
 
     // ── Background layers ─────────────────────────────────────────────────────
+    #if os(macOS)
+    public static let background = Color(nsColor: .windowBackgroundColor)
+    public static let surface = Color(nsColor: .controlBackgroundColor)
+    public static let surfaceElevated = Color(nsColor: .gridColor)
+    #else
     /// Deep navy-black canvas — the app's primary background.
     public static let background = Color(hue: 0.67, saturation: 0.20, brightness: 0.07)
     /// Slightly elevated surface for cards and panels.
     public static let surface = Color(hue: 0.67, saturation: 0.18, brightness: 0.12)
     /// Second elevation — dialogs, popovers.
     public static let surfaceElevated = Color(hue: 0.67, saturation: 0.15, brightness: 0.17)
+    #endif
     /// Subtle divider / separator.
     public static let divider = Color.white.opacity(0.08)
 
@@ -32,9 +38,15 @@ public enum SwiftBuddyTheme {
     public static let error   = Color(hue: 0.02, saturation: 0.80, brightness: 0.90)
 
     // ── Text ──────────────────────────────────────────────────────────────────
+    #if os(macOS)
+    public static let textPrimary   = Color(nsColor: .labelColor)
+    public static let textSecondary = Color(nsColor: .secondaryLabelColor)
+    public static let textTertiary  = Color(nsColor: .tertiaryLabelColor)
+    #else
     public static let textPrimary   = Color.white
     public static let textSecondary = Color.white.opacity(0.60)
     public static let textTertiary  = Color.white.opacity(0.35)
+    #endif
 
     // ─────────────────────────────────────────────────────────────────────────
     // MARK: — Gradients

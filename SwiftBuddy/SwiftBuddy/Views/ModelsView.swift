@@ -1,6 +1,9 @@
 // ModelsView.swift — Unified iOS-first Models tab (premium theme)
 // Combines: active model, downloads in progress, downloaded list, catalog, HF search
 import SwiftUI
+#if canImport(MLXInferenceCore)
+import MLXInferenceCore
+#endif
 
 struct ModelsView: View {
     @EnvironmentObject private var engine: InferenceEngine

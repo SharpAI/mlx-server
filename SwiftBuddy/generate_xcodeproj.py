@@ -35,33 +35,35 @@ TGT_RELEASE   = uid()
 # Local SPM packages
 PKG_MLX       = uid()
 PKG_MLXLM     = uid()
+PKG_TRANSFORMERS = uid()
+PKG_HUMMINGBIRD = uid()
+PKG_SWIFTSOUP = uid()
 
 # SPM product dependencies
 PROD_MLX      = uid()
 PROD_MLXLLM   = uid()
 PROD_MLXLMC   = uid()
+PROD_HUB      = uid()
+PROD_TOKENIZERS = uid()
+PROD_HUMMINGBIRD = uid()
+PROD_SWIFTSOUP = uid()
 
 # Build files for SPM products (in Frameworks phase)
 BF_MLX_FWK    = uid()
 BF_MLXLLM_FWK = uid()
 BF_MLXLMC_FWK = uid()
+BF_HUB_FWK    = uid()
+BF_TOKENIZERS_FWK = uid()
+BF_HUMMINGBIRD_FWK = uid()
+BF_SWIFTSOUP_FWK = uid()
 
 ASSETS_REF    = uid()
 ASSETS_BF     = uid()
 
 # ── App source files (relative to SwiftBuddy/)
-app_sources = [
-    ("SwiftBuddy/SwiftBuddyApp.swift",          uid(), uid()),
-    ("SwiftBuddy/Theme.swift",                   uid(), uid()),
-    ("SwiftBuddy/Views/RootView.swift",           uid(), uid()),
-    ("SwiftBuddy/Views/ChatView.swift",           uid(), uid()),
-    ("SwiftBuddy/Views/MessageBubble.swift",      uid(), uid()),
-    ("SwiftBuddy/Views/ModelsView.swift",         uid(), uid()),
-    ("SwiftBuddy/Views/ModelPickerView.swift",    uid(), uid()),
-    ("SwiftBuddy/Views/ModelManagementView.swift",uid(), uid()),
-    ("SwiftBuddy/Views/SettingsView.swift",       uid(), uid()),
-    ("SwiftBuddy/ViewModels/ChatViewModel.swift", uid(), uid()),
-]
+app_sources = []
+for p in sorted(Path("SwiftBuddy").rglob("*.swift")):
+    app_sources.append((str(p), uid(), uid()))
 
 # ── MLXInferenceCore sources (path relative to SwiftBuddy/)
 core_sources = [
@@ -87,6 +89,10 @@ def pbxproj():
     build_files += f"\t\t{BF_MLX_FWK} /* MLX in Frameworks */ = {{isa = PBXBuildFile; productRef = {PROD_MLX} /* MLX */; }};\n"
     build_files += f"\t\t{BF_MLXLLM_FWK} /* MLXLLM in Frameworks */ = {{isa = PBXBuildFile; productRef = {PROD_MLXLLM} /* MLXLLM */; }};\n"
     build_files += f"\t\t{BF_MLXLMC_FWK} /* MLXLMCommon in Frameworks */ = {{isa = PBXBuildFile; productRef = {PROD_MLXLMC} /* MLXLMCommon */; }};\n"
+    build_files += f"\t\t{BF_HUB_FWK} /* Hub in Frameworks */ = {{isa = PBXBuildFile; productRef = {PROD_HUB} /* Hub */; }};\n"
+    build_files += f"\t\t{BF_TOKENIZERS_FWK} /* Tokenizers in Frameworks */ = {{isa = PBXBuildFile; productRef = {PROD_TOKENIZERS} /* Tokenizers */; }};\n"
+    build_files += f"\t\t{BF_HUMMINGBIRD_FWK} /* Hummingbird in Frameworks */ = {{isa = PBXBuildFile; productRef = {PROD_HUMMINGBIRD} /* Hummingbird */; }};\n"
+    build_files += f"\t\t{BF_SWIFTSOUP_FWK} /* SwiftSoup in Frameworks */ = {{isa = PBXBuildFile; productRef = {PROD_SWIFTSOUP} /* SwiftSoup */; }};\n"
 
     # PBXFileReference entries
     file_refs = ""
@@ -147,6 +153,10 @@ def pbxproj():
 \t\t\t\t{BF_MLX_FWK} /* MLX in Frameworks */,
 \t\t\t\t{BF_MLXLLM_FWK} /* MLXLLM in Frameworks */,
 \t\t\t\t{BF_MLXLMC_FWK} /* MLXLMCommon in Frameworks */,
+\t\t\t\t{BF_HUB_FWK} /* Hub in Frameworks */,
+\t\t\t\t{BF_TOKENIZERS_FWK} /* Tokenizers in Frameworks */,
+\t\t\t\t{BF_HUMMINGBIRD_FWK} /* Hummingbird in Frameworks */,
+\t\t\t\t{BF_SWIFTSOUP_FWK} /* SwiftSoup in Frameworks */,
 \t\t\t);
 \t\t\trunOnlyForDeploymentPostprocessing = 0;
 \t\t}};
@@ -223,6 +233,10 @@ def pbxproj():
 \t\t\t\t{PROD_MLX} /* MLX */,
 \t\t\t\t{PROD_MLXLLM} /* MLXLLM */,
 \t\t\t\t{PROD_MLXLMC} /* MLXLMCommon */,
+\t\t\t\t{PROD_HUB} /* Hub */,
+\t\t\t\t{PROD_TOKENIZERS} /* Tokenizers */,
+\t\t\t\t{PROD_HUMMINGBIRD} /* Hummingbird */,
+\t\t\t\t{PROD_SWIFTSOUP} /* SwiftSoup */,
 \t\t\t);
 \t\t\tproductName = SwiftBuddy;
 \t\t\tproductReference = {APP_PRODUCT};
@@ -250,8 +264,11 @@ def pbxproj():
 \t\t\tknownRegions = (en, Base);
 \t\t\tmainGroup = {MAIN_GRP};
 \t\t\tpackageReferences = (
-\t\t\t\t{PKG_MLX} /* XCLocalSwiftPackageReference "mlx-swift" */,
-\t\t\t\t{PKG_MLXLM} /* XCLocalSwiftPackageReference "mlx-swift-lm" */,
+\t\t\t\t{PKG_MLX} /* XCRemoteSwiftPackageReference "mlx-swift" */,
+\t\t\t\t{PKG_MLXLM} /* XCRemoteSwiftPackageReference "mlx-swift-lm" */,
+\t\t\t\t{PKG_TRANSFORMERS} /* XCRemoteSwiftPackageReference "swift-transformers" */,
+\t\t\t\t{PKG_HUMMINGBIRD} /* XCRemoteSwiftPackageReference "hummingbird" */,
+\t\t\t\t{PKG_SWIFTSOUP} /* XCRemoteSwiftPackageReference "SwiftSoup" */,
 \t\t\t);
 \t\t\tproductsGroup = {PRODUCTS_GRP};
 \t\t\tprojectDirPath = "";
@@ -292,6 +309,8 @@ def pbxproj():
 \t\t\t\tMTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 \t\t\t\tMTL_FAST_MATH = YES;
 \t\t\t\tONLY_ACTIVE_ARCH = YES;
+\t\t\t\tARCHS = arm64;
+\t\t\t\tVALID_ARCHS = arm64;
 \t\t\t\tSWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 \t\t\t}};
 \t\t\tname = Debug;
@@ -303,6 +322,9 @@ def pbxproj():
 \t\t\t\tCOPY_PHASE_STRIP = NO;
 \t\t\t\tDEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 \t\t\t\tMTL_FAST_MATH = YES;
+\t\t\t\tONLY_ACTIVE_ARCH = YES;
+\t\t\t\tARCHS = arm64;
+\t\t\t\tVALID_ARCHS = arm64;
 \t\t\t\tSWIFT_COMPILATION_MODE = wholemodule;
 \t\t\t}};
 \t\t\tname = Release;
@@ -374,16 +396,48 @@ def pbxproj():
 \t\t}};
 /* End XCConfigurationList section */
 
-/* Begin XCLocalSwiftPackageReference section */
-\t\t{PKG_MLX} /* XCLocalSwiftPackageReference "mlx-swift" */ = {{
-\t\t\tisa = XCLocalSwiftPackageReference;
-\t\t\trelativePath = ../LocalPackages/mlx-swift;
+/* Begin XCRemoteSwiftPackageReference section */
+\t\t{PKG_MLX} /* XCRemoteSwiftPackageReference "mlx-swift" */ = {{
+\t\t\tisa = XCRemoteSwiftPackageReference;
+\t\t\trepositoryURL = "https://github.com/SharpAI/mlx-swift.git";
+\t\t\trequirement = {{
+\t\t\t\tkind = branch;
+\t\t\t\tbranch = main;
+\t\t\t}};
 \t\t}};
-\t\t{PKG_MLXLM} /* XCLocalSwiftPackageReference "mlx-swift-lm" */ = {{
-\t\t\tisa = XCLocalSwiftPackageReference;
-\t\t\trelativePath = ../mlx-swift-lm;
+\t\t{PKG_MLXLM} /* XCRemoteSwiftPackageReference "mlx-swift-lm" */ = {{
+\t\t\tisa = XCRemoteSwiftPackageReference;
+\t\t\trepositoryURL = "https://github.com/SharpAI/mlx-swift-lm.git";
+\t\t\trequirement = {{
+\t\t\t\tkind = branch;
+\t\t\t\tbranch = main;
+\t\t\t}};
 \t\t}};
-/* End XCLocalSwiftPackageReference section */
+\t\t{PKG_TRANSFORMERS} /* XCRemoteSwiftPackageReference "swift-transformers" */ = {{
+\t\t\tisa = XCRemoteSwiftPackageReference;
+\t\t\trepositoryURL = "https://github.com/huggingface/swift-transformers";
+\t\t\trequirement = {{
+\t\t\t\tkind = upToNextMinorVersion;
+\t\t\t\tminimumVersion = 1.2.0;
+\t\t\t}};
+\t\t}};
+\t\t{PKG_HUMMINGBIRD} /* XCRemoteSwiftPackageReference "hummingbird" */ = {{
+\t\t\tisa = XCRemoteSwiftPackageReference;
+\t\t\trepositoryURL = "https://github.com/hummingbird-project/hummingbird";
+\t\t\trequirement = {{
+\t\t\t\tkind = upToNextMajorVersion;
+\t\t\t\tminimumVersion = 2.0.0;
+\t\t\t}};
+\t\t}};
+\t\t{PKG_SWIFTSOUP} /* XCRemoteSwiftPackageReference "SwiftSoup" */ = {{
+\t\t\tisa = XCRemoteSwiftPackageReference;
+\t\t\trepositoryURL = "https://github.com/scinfu/SwiftSoup.git";
+\t\t\trequirement = {{
+\t\t\t\tkind = upToNextMajorVersion;
+\t\t\t\tminimumVersion = 2.7.0;
+\t\t\t}};
+\t\t}};
+/* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 \t\t{PROD_MLX} /* MLX */ = {{
@@ -400,6 +454,26 @@ def pbxproj():
 \t\t\tisa = XCSwiftPackageProductDependency;
 \t\t\tpackage = {PKG_MLXLM};
 \t\t\tproductName = MLXLMCommon;
+\t\t}};
+\t\t{PROD_HUB} /* Hub */ = {{
+\t\t\tisa = XCSwiftPackageProductDependency;
+\t\t\tpackage = {PKG_TRANSFORMERS};
+\t\t\tproductName = Hub;
+\t\t}};
+\t\t{PROD_TOKENIZERS} /* Tokenizers */ = {{
+\t\t\tisa = XCSwiftPackageProductDependency;
+\t\t\tpackage = {PKG_TRANSFORMERS};
+\t\t\tproductName = Tokenizers;
+\t\t}};
+\t\t{PROD_HUMMINGBIRD} /* Hummingbird */ = {{
+\t\t\tisa = XCSwiftPackageProductDependency;
+\t\t\tpackage = {PKG_HUMMINGBIRD};
+\t\t\tproductName = Hummingbird;
+\t\t}};
+\t\t{PROD_SWIFTSOUP} /* SwiftSoup */ = {{
+\t\t\tisa = XCSwiftPackageProductDependency;
+\t\t\tpackage = {PKG_SWIFTSOUP};
+\t\t\tproductName = SwiftSoup;
 \t\t}};
 /* End XCSwiftPackageProductDependency section */
 

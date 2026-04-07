@@ -6,7 +6,8 @@ let package = Package(
     platforms: [.macOS(.v14), .iOS(.v17)],
     products: [
         .library(name: "MLXInferenceCore", targets: ["MLXInferenceCore"]),
-        .executable(name: "SwiftLM", targets: ["SwiftLM"])
+        .executable(name: "SwiftLM", targets: ["SwiftLM"]),
+        .executable(name: "SwiftBuddy", targets: ["SwiftBuddy"])
     ],
     dependencies: [
         // Local Apple MLX Swift fork for C++ extensions
@@ -19,6 +20,8 @@ let package = Package(
         .package(url: "https://github.com/hummingbird-project/hummingbird", from: "2.0.0"),
         // Async argument parser (for CLI flags: --model, --port)
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
+        // SwiftSoup for HTML parsing
+        .package(url: "https://github.com/scinfu/SwiftSoup.git", from: "2.7.0"),
     ],
     targets: [
         // ── CLI HTTP server (macOS only) ──────────────────────────────
@@ -36,6 +39,16 @@ let package = Package(
             ],
             path: "Sources/SwiftLM"
         ),
+        // ── macOS GUI App (SwiftBuddy) ──────────────────────────────
+        .executableTarget(
+            name: "SwiftBuddy",
+            dependencies: [
+                "MLXInferenceCore",
+                .product(name: "Hummingbird", package: "hummingbird"),
+                .product(name: "SwiftSoup", package: "SwiftSoup"),
+            ],
+            path: "SwiftBuddy/SwiftBuddy"
+        ),
         // ── Shared inference library for SwiftLM Chat (iOS + macOS) ──
         .target(
             name: "MLXInferenceCore",
@@ -52,5 +65,10 @@ let package = Package(
                 .enableExperimentalFeature("StrictConcurrency")
             ]
         ),
+        // ── Automated Test Harness ──────────────────────────────────
+        .testTarget(
+            name: "SwiftBuddyTests",
+            dependencies: ["SwiftBuddy", "MLXInferenceCore"]
+        )
     ]
 )

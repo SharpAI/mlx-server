@@ -22,3 +22,5 @@ curl_out.txt
 sample.txt
 tmp/
 /homesec-benchmark/
+/SwiftBuddy/build/
+/swiftbuddy-registry/

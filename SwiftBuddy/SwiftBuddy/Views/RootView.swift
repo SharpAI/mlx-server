@@ -1,5 +1,8 @@
 // RootView.swift — Adaptive root layout: tab bar on iOS, sidebar on macOS
 import SwiftUI
+#if canImport(MLXInferenceCore)
+import MLXInferenceCore
+#endif
 
 struct RootView: View {
     @EnvironmentObject private var engine: InferenceEngine
@@ -129,15 +132,22 @@ struct RootView: View {
             }
             .frame(minWidth: 220)
             .background(SwiftBuddyTheme.background)
-        } detail: {
+        } content: {
             ChatView(
                 viewModel: viewModel,
                 showSettings: $showSettings,
                 showModelPicker: $showModelPicker
             )
+            .frame(minWidth: 400)
+            .background(SwiftBuddyTheme.background)
+            .navigationTitle("Chat")
+        } detail: {
+            InspectorView(
+                showModelPicker: $showModelPicker
+            )
+            .frame(minWidth: 250)
             .background(SwiftBuddyTheme.background)
         }
-        .navigationTitle("")
     }
 
     // Branded header — bolt icon + SwiftBuddy wordmark + version chip

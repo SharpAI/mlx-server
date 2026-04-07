@@ -1,5 +1,8 @@
 // SettingsView.swift — Inference + appearance settings (iOS tab or macOS sheet)
 import SwiftUI
+#if canImport(MLXInferenceCore)
+import MLXInferenceCore
+#endif
 
 struct SettingsView: View {
     @ObservedObject var viewModel: ChatViewModel
@@ -193,10 +196,7 @@ struct SettingsView: View {
     }
 
     private var thinkingToggle: some View {
-        Toggle(isOn: Binding(
-            get: { viewModel.config.enableThinking },
-            set: { viewModel.config.enableThinking = $0 }
-        )) {
+        Toggle(isOn: $viewModel.config.enableThinking) {
             VStack(alignment: .leading, spacing: 2) {
                 Label("Thinking Mode", systemImage: "brain.head.profile")
                     .foregroundStyle(SwiftBuddyTheme.textPrimary)

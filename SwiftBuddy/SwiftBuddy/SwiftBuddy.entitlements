@@ -8,6 +8,14 @@
     <key>com.apple.developer.kernel.increased-memory-limit</key>
     <true/>
 
+    <!-- Allows outgoing network connections for HuggingFace model downloading and API searching -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- Allows local outgoing/incoming server for the local inference API -->
+    <key>com.apple.security.network.server</key>
+    <true/>
+
     <!-- Background URLSession: keeps model downloads alive when app is backgrounded -->
     <key>UIBackgroundModes</key>
     <array>

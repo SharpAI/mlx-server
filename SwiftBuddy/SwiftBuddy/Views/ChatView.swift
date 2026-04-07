@@ -1,5 +1,8 @@
 // ChatView.swift — Premium chat interface (iOS + macOS)
 import SwiftUI
+#if canImport(MLXInferenceCore)
+import MLXInferenceCore
+#endif
 
 struct ChatView: View {
     @ObservedObject var viewModel: ChatViewModel

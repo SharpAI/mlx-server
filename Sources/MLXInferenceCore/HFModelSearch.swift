@@ -86,6 +86,7 @@ public final class HFModelSearchService: ObservableObject {
     @Published public var isSearching = false
     @Published public var errorMessage: String? = nil
     @Published public var hasMore = false
+    @Published public var strictMLX: Bool = true
 
     private let hfBase = "https://huggingface.co/api/models"
     private let pageSize = 20
@@ -127,16 +128,24 @@ public final class HFModelSearchService: ObservableObject {
 
         var components = URLComponents(string: hfBase)!
         var queryItems: [URLQueryItem] = [
-            // MLX format filter (matches Aegis-AI: library_name=mlx)
-            URLQueryItem(name: "library",      value: "mlx"),
             URLQueryItem(name: "pipeline_tag", value: "text-generation"),
             URLQueryItem(name: "sort",         value: currentSort.rawValue),
             URLQueryItem(name: "limit",        value: "\(pageSize)"),
             URLQueryItem(name: "offset",       value: "\(currentOffset)"),
             URLQueryItem(name: "full",         value: "false"),
         ]
-        if !currentQuery.isEmpty {
-            queryItems.append(URLQueryItem(name: "search", value: currentQuery))
+        
+        if strictMLX {
+            queryItems.append(URLQueryItem(name: "library", value: "mlx"))
+        }
+
+        var finalQuery = currentQuery
+        if !strictMLX && !finalQuery.lowercased().contains("mlx") && !finalQuery.isEmpty {
+            finalQuery = finalQuery + " mlx"
+        }
+        
+        if !finalQuery.isEmpty {
+            queryItems.append(URLQueryItem(name: "search", value: finalQuery))
         }
         components.queryItems = queryItems
 

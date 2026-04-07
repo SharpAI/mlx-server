@@ -1,6 +1,9 @@
 // ChatViewModel.swift — Bridges InferenceEngine actor to SwiftUI
 import SwiftUI
 import Combine
+#if canImport(MLXInferenceCore)
+import MLXInferenceCore
+#endif
 
 @MainActor
 final class ChatViewModel: ObservableObject {

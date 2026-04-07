@@ -1,0 +1,23 @@
+[
+  {
+    "id": "mlx-community/Qwen2.5-7B-Instruct-4bit",
+    "likes": 42,
+    "downloads": 15230,
+    "pipeline_tag": "text-generation",
+    "tags": ["mlx", "text-generation", "4bit"]
+  },
+  {
+    "id": "mlx-community/gemma-4-26b-a4b-it-4bit",
+    "likes": 89,
+    "downloads": 8500,
+    "pipeline_tag": "text-generation",
+    "tags": ["mlx", "text-generation", "moe", "4bit"]
+  },
+  {
+    "id": "mlx-community/Mistral-7B-Instruct-v0.3-4bit",
+    "likes": 31,
+    "downloads": 22100,
+    "pipeline_tag": "text-generation",
+    "tags": ["mlx", "text-generation", "4bit"]
+  }
+]
