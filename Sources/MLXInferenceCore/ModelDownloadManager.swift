@@ -4,6 +4,9 @@
 import Foundation
 import Network
 import Combine
+#if os(macOS)
+import Hub
+#endif
 
 // MARK: — Downloaded Model
 
@@ -170,6 +173,24 @@ public final class ModelDownloadManager: ObservableObject {
                     )
                 }
             }
+            #else
+            let hub = HubApi(downloadBase: ModelStorage.cacheRoot)
+            _ = try await hub.snapshot(
+                from: modelId,
+                matching: ["*.safetensors", "*.json", "*.model", "*.txt", "*.tiktoken"],
+                progressHandler: { [weak self] progress in
+                    Task { @MainActor [weak self] in
+                        let pct = progress.fractionCompleted
+                        let speedBytesPerSec = progress.userInfo[ProgressUserInfoKey("throughputKey")] as? Double
+                        self?.activeDownloads[modelId] = ModelDownloadProgress(
+                            modelId: modelId,
+                            fractionCompleted: pct,
+                            currentFile: "",
+                            speedMBps: speedBytesPerSec.map { $0 / 1_000_000 }
+                        )
+                    }
+                }
+            )
             #endif
 
             Task { @MainActor [weak self] in
