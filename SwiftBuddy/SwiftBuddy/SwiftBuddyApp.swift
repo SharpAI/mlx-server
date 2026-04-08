@@ -82,6 +82,16 @@ struct MainContentView: View {
                 
                 // Pre-load the JSON personas so the UI Wings instantly populate!
                 PersonaLoader.loadDevDefaults()
+                
+                // Automatically resume the last selected model via UserDefaults
+                if let lastModel = engine.downloadManager.lastLoadedModelId {
+                    Task {
+                        // Prevent loading if we're already loading or ready
+                        if case .idle = engine.state {
+                            await engine.load(modelId: lastModel)
+                        }
+                    }
+                }
             }
     }
 }
