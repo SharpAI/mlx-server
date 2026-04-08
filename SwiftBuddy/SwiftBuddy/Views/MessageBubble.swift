@@ -11,6 +11,7 @@ import MLXInferenceCore
 struct MessageBubble: View {
     let message: ChatMessage
     @State private var showTimestamp = false
+    @State private var thinkingExpanded = false
     @EnvironmentObject private var engine: InferenceEngine
 
     var isUser: Bool { message.role == .user }
@@ -70,25 +71,33 @@ struct MessageBubble: View {
     // MARK: — Assistant Bubble
 
     private var assistantBubble: some View {
-        Text(message.content)
-            .font(.system(.body, design: .default))
-            .textSelection(.enabled)
-            .foregroundStyle(SwiftBuddyTheme.textPrimary)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(.ultraThinMaterial)
-            .background(SwiftBuddyTheme.surface.opacity(0.80))
-            .clipShape(AssistantBubbleShape())
-            .overlay(
-                AssistantBubbleShape()
-                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
-            )
-            .shadow(
-                color: SwiftBuddyTheme.shadowBubble.color,
-                radius: SwiftBuddyTheme.shadowBubble.radius,
-                x: SwiftBuddyTheme.shadowBubble.x,
-                y: SwiftBuddyTheme.shadowBubble.y
-            )
+        VStack(alignment: .leading, spacing: 6) {
+            if let thinking = message.thinkingContent, !thinking.isEmpty {
+                ThinkingPanel(text: thinking, isExpanded: $thinkingExpanded)
+            }
+            
+            if !message.content.isEmpty {
+                Text(message.content)
+                    .font(.system(.body, design: .default))
+                    .textSelection(.enabled)
+                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(.ultraThinMaterial)
+                    .background(SwiftBuddyTheme.surface.opacity(0.80))
+                    .clipShape(AssistantBubbleShape())
+                    .overlay(
+                        AssistantBubbleShape()
+                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                    )
+                    .shadow(
+                        color: SwiftBuddyTheme.shadowBubble.color,
+                        radius: SwiftBuddyTheme.shadowBubble.radius,
+                        x: SwiftBuddyTheme.shadowBubble.x,
+                        y: SwiftBuddyTheme.shadowBubble.y
+                    )
+            }
+        }
     }
 }
 

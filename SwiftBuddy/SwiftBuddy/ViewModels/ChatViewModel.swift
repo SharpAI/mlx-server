@@ -112,7 +112,7 @@ final class ChatViewModel: ObservableObject {
                 finalVisible = finalVisible.trimmingCharacters(in: .whitespacesAndNewlines)
                 
                 if !finalVisible.isEmpty {
-                    messages.append(.assistant(finalVisible))
+                    messages.append(.assistant(finalVisible, thinkingContent: thinkingText))
                 }
             }
 
@@ -129,7 +129,7 @@ final class ChatViewModel: ObservableObject {
     func stopGeneration() {
         generationTask?.cancel()
         if !streamingText.isEmpty {
-            messages.append(.assistant(streamingText))
+            messages.append(.assistant(streamingText, thinkingContent: thinkingText))
         }
         streamingText = ""
         thinkingText = nil

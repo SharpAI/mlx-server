@@ -8,6 +8,7 @@ public struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     public let id: UUID
     public let role: Role
     public var content: String
+    public var thinkingContent: String?
     public let timestamp: Date
 
     public enum Role: String, Codable, Sendable {
@@ -16,10 +17,11 @@ public struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
         case assistant
     }
 
-    public init(role: Role, content: String, id: UUID = UUID(), timestamp: Date = Date()) {
+    public init(role: Role, content: String, thinkingContent: String? = nil, id: UUID = UUID(), timestamp: Date = Date()) {
         self.id = id
         self.role = role
         self.content = content
+        self.thinkingContent = thinkingContent
         self.timestamp = timestamp
     }
 
@@ -30,7 +32,7 @@ public struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     public static func user(_ content: String) -> ChatMessage {
         ChatMessage(role: .user, content: content)
     }
-    public static func assistant(_ content: String) -> ChatMessage {
-        ChatMessage(role: .assistant, content: content)
+    public static func assistant(_ content: String, thinkingContent: String? = nil) -> ChatMessage {
+        ChatMessage(role: .assistant, content: content, thinkingContent: thinkingContent)
     }
 }
