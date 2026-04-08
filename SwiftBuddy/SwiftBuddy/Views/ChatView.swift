@@ -56,16 +56,22 @@ struct ChatView: View {
                 } else {
                     LazyVStack(alignment: .leading, spacing: 14) {
                         ForEach(viewModel.messages) { message in
-                            MessageBubble(message: message)
-                                .id(message.id)
-                                .environmentObject(engine)
+                            MessageBubble(
+                                message: message,
+                                isRPGMode: viewModel.currentWing != nil,
+                                personaName: viewModel.currentWing
+                            )
+                            .id(message.id)
+                            .environmentObject(engine)
                         }
                         if !viewModel.streamingText.isEmpty || viewModel.thinkingText != nil {
                             StreamingBubble(
                                 text: viewModel.streamingText,
-                                thinkingText: viewModel.thinkingText
+                                thinkingText: viewModel.thinkingText,
+                                isRPGMode: viewModel.currentWing != nil,
+                                personaName: viewModel.currentWing
                             )
-                            .id("streaming")
+                            .id("generating")
                             .environmentObject(engine)
                         }
                         Color.clear.frame(height: 1).id("bottom")

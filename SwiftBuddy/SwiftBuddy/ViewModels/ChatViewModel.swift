@@ -38,8 +38,13 @@ final class ChatViewModel: ObservableObject {
                 var wakeUpText = ""
                 let coreFacts = try MemoryPalaceService.shared.fetchRoomContents(wingName: wing, roomName: "CORE IDENTITY")
                 let bgFacts = try MemoryPalaceService.shared.fetchRoomContents(wingName: wing, roomName: "BACKGROUND STORY")
+                let toneFacts = try MemoryPalaceService.shared.fetchRoomContents(wingName: wing, roomName: "TALK TONE")
                 
-                let combinedIdentity = (coreFacts + bgFacts).joined(separator: "\n")
+                var combinedIdentity = (coreFacts + bgFacts).joined(separator: "\n")
+                if !toneFacts.isEmpty {
+                    combinedIdentity += "\n\nCONVERSATIONAL TONE DIRECTIVE:\n" + toneFacts.joined(separator: "\n")
+                }
+                
                 if !combinedIdentity.isEmpty {
                     wakeUpText = "SYSTEM PERSONA DIRECTIVE:\n\(combinedIdentity)\n\n"
                     dynamicSystemPrompt = wakeUpText + dynamicSystemPrompt
