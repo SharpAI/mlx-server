@@ -9,10 +9,6 @@ struct InspectorView: View {
     @Binding var showModelPicker: Bool
     
     @Query(sort: \PalaceWing.name) var wings: [PalaceWing]
-    @StateObject private var extractionService = ExtractionService.shared
-    
-    @State private var textToMine: String = ""
-    @State private var targetWing: String = "Einstein"
     @StateObject private var registryService = RegistryService.shared
     
     var body: some View {
@@ -155,44 +151,6 @@ struct InspectorView: View {
                     .cornerRadius(8)
                 } header: {
                     Text("MEMORY SYSTEM").font(.caption).foregroundColor(.secondary)
-                }
-                
-                // MARK: - Memory Miner
-                Section {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Label("Memory Miner", systemImage: "hammer.fill")
-                            .font(.headline)
-                        
-                        TextField("Target Wing (e.g. Einstein)", text: $targetWing)
-                            .textFieldStyle(.roundedBorder)
-                        
-                        TextField("Paste raw text or context...", text: $textToMine, axis: .vertical)
-                            .lineLimit(4...8)
-                            .textFieldStyle(.roundedBorder)
-                        
-                        Button(action: {
-                            Task {
-                                await extractionService.mine(textBlock: textToMine, wing: targetWing, engine: engine)
-                                textToMine = ""
-                            }
-                        }) {
-                            Text(extractionService.isMining ? "Mining..." : "Extract to Palace")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(extractionService.isMining || textToMine.isEmpty)
-                        
-                        if !extractionService.lastLog.isEmpty {
-                            Text(extractionService.lastLog)
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    .padding()
-                    .background(Color(nsColor: .controlBackgroundColor))
-                    .cornerRadius(8)
-                } header: {
-                    Text("TEXT INGESTION").font(.caption).foregroundColor(.secondary)
                 }
                 
                 // MARK: - Cloud Persona Registry

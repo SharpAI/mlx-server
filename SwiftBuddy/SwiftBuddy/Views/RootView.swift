@@ -1,5 +1,6 @@
 // RootView.swift — Adaptive root layout: tab bar on iOS, sidebar on macOS
 import SwiftUI
+import SwiftData
 #if canImport(MLXInferenceCore)
 import MLXInferenceCore
 #endif
@@ -8,6 +9,7 @@ struct RootView: View {
     @EnvironmentObject private var engine: InferenceEngine
     @EnvironmentObject private var appearance: AppearanceStore
     @StateObject private var viewModel = ChatViewModel()
+    @Query(sort: \PalaceWing.createdDate) var wings: [PalaceWing]
 
     // iOS: tab selection
     @State private var selectedTab: Tab = .chat
@@ -16,8 +18,9 @@ struct RootView: View {
     @State private var showModelPicker = false
     @State private var showSettings = false
     @State private var showMap = false
+    @State private var showTextIngestion = false
 
-    enum Tab { case chat, models, palace, settings }
+    enum Tab { case chat, models, palace, miner, settings }
 
     var body: some View {
         Group {
@@ -37,6 +40,10 @@ struct RootView: View {
                 .sheet(isPresented: $showMap) {
                     PalaceVisualizerView()
                         .frame(width: 800, height: 600)
+                }
+                .sheet(isPresented: $showTextIngestion) {
+                    TextIngestionView()
+                        .environmentObject(engine)
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .showModelPicker)) { _ in
                     showModelPicker = true
@@ -60,8 +67,36 @@ struct RootView: View {
         TabView(selection: $selectedTab) {
             // ── Chat Tab ──────────────────────────────────────────────────
             NavigationStack {
-                ChatView(viewModel: viewModel)
-                    .environmentObject(engine)
+                List {
+                    Section("Conversations") {
+                        NavigationLink {
+                            ChatView(viewModel: viewModel)
+                                .environmentObject(engine)
+                                .onAppear { 
+                                    viewModel.currentWing = nil
+                                    viewModel.newConversation()
+                                }
+                        } label: {
+                            Label("Core System Chat", systemImage: "sparkles")
+                        }
+                    }
+                    
+                    Section("Friends (Personas)") {
+                        ForEach(wings) { wing in
+                            NavigationLink {
+                                ChatView(viewModel: viewModel)
+                                    .environmentObject(engine)
+                                    .onAppear { 
+                                        viewModel.currentWing = wing.name 
+                                        viewModel.newConversation()
+                                    }
+                            } label: {
+                                Label(wing.name, systemImage: "person.crop.circle")
+                            }
+                        }
+                    }
+                }
+                .navigationTitle("Connections")
             }
             .tabItem {
                 Label("Chat", systemImage: selectedTab == .chat
@@ -91,6 +126,17 @@ struct RootView: View {
                 Label("Palace", systemImage: selectedTab == .palace ? "brain.head.profile" : "brain")
             }
             .tag(Tab.palace)
+            
+            // ── Miner Tab ──────────────────────────────────────────────
+            NavigationStack {
+                TextIngestionView()
+                    .environmentObject(engine)
+                    .navigationTitle("Memory Miner")
+            }
+            .tabItem {
+                Label("Miner", systemImage: selectedTab == .miner ? "hammer.fill" : "hammer")
+            }
+            .tag(Tab.miner)
 
             // ── Settings Tab ──────────────────────────────────────────────
             NavigationStack {
@@ -130,9 +176,10 @@ struct RootView: View {
                 List {
                     Section("Conversations") {
                         Button {
+                            viewModel.currentWing = nil
                             viewModel.newConversation()
                         } label: {
-                            Label("New Chat", systemImage: "plus.bubble")
+                            Label("Core Chat", systemImage: "sparkles")
                                 .foregroundStyle(SwiftBuddyTheme.accent)
                         }
                         .buttonStyle(.plain)
@@ -144,6 +191,28 @@ struct RootView: View {
                                 .foregroundStyle(.orange)
                         }
                         .buttonStyle(.plain)
+                    }
+                    
+                    Section("Tools") {
+                        Button {
+                            showTextIngestion = true
+                        } label: {
+                            Label("Text Ingestion", systemImage: "hammer.fill")
+                                .foregroundStyle(SwiftBuddyTheme.cyan)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    
+                    Section("Friends (Personas)") {
+                        ForEach(wings) { wing in
+                            Button {
+                                viewModel.currentWing = wing.name
+                                viewModel.newConversation()
+                            } label: {
+                                Label(wing.name, systemImage: "person.crop.circle")
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                 }
                 .listStyle(.sidebar)
