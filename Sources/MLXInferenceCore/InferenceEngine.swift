@@ -372,6 +372,8 @@ public final class InferenceEngine: ObservableObject {
                     let mlxMessages = messages.map { ["role": $0.role.rawValue, "content": $0.content] }
                     var params = GenerateParameters(temperature: config.temperature)
                     params.topP = config.topP
+                    params.repetitionPenalty = config.repetitionPenalty
+                    params.repetitionContextSize = 20
 
                     var thinkingActive = false
                     var outputText = ""

@@ -29,6 +29,7 @@ struct SettingsView: View {
                     temperatureRow
                     maxTokensRow
                     topPRow
+                    repetitionPenaltyRow
                 } header: {
                     sectionLabel("Generation", icon: "slider.horizontal.3")
                 }
@@ -191,6 +192,29 @@ struct SettingsView: View {
                 set: { viewModel.config.topP = Float($0) }
             ), in: 0...1, step: 0.05)
             .tint(SwiftBuddyTheme.accentSecondary)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var repetitionPenaltyRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Label("Repetition Penalty", systemImage: "repeat.circle")
+                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                Spacer()
+                Text(String(format: "%.2f", viewModel.config.repetitionPenalty))
+                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
+                    .monospacedDigit()
+                    .font(.callout)
+            }
+            Slider(value: Binding(
+                get: { Double(viewModel.config.repetitionPenalty) },
+                set: { viewModel.config.repetitionPenalty = Float($0) }
+            ), in: 1.0...2.0, step: 0.01)
+            .tint(SwiftBuddyTheme.success)
+            Text("Higher = less repeating, 1.0 = disabled (can cause echoing)")
+                .font(.caption2)
+                .foregroundStyle(SwiftBuddyTheme.textTertiary)
         }
         .padding(.vertical, 2)
     }
