@@ -23,21 +23,41 @@ public final class RegistryService: ObservableObject {
     public func fetchAvailablePersonas() async {
         isSyncing = true
         lastSyncLog = "Fetching cloud registry..."
+        print("[RegistryService] fetchAvailablePersonas started. URL: \(repoUrl)")
         
-        guard let url = URL(string: repoUrl) else { return }
+        guard let url = URL(string: repoUrl) else { 
+            print("[RegistryService] Invalid URL structure.")
+            isSyncing = false
+            return 
+        }
+        
+        var request = URLRequest(url: url)
+        request.setValue("SwiftBuddy-macOS/1.0", forHTTPHeaderField: "User-Agent")
         
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            
+            if let httpResponse = response as? HTTPURLResponse {
+                print("[RegistryService] Github HTTP Status: \(httpResponse.statusCode)")
+                if httpResponse.statusCode != 200 {
+                    let bodyString = String(data: data, encoding: .utf8) ?? "<binary/empty>"
+                    print("[RegistryService] GitHub response body: \(bodyString)")
+                }
+            }
             
             if let nodes = try? JSONDecoder().decode([GithubNode].self, from: data) {
                 self.availablePersonas = nodes.filter { $0.type == "dir" }.map { $0.name }
                 lastSyncLog = "Found \(self.availablePersonas.count) characters in the cloud."
+                print("[RegistryService] Successfully mapped \(self.availablePersonas.count) nodes.")
             } else {
+                let bodyString = String(data: data, encoding: .utf8) ?? ""
+                print("[RegistryService] Failed to decode 404 or missing array format. Payload length: \(bodyString.count)")
                 // Fallback to local bundled localization
                 self.availablePersonas = ["Einstein_Localized"]
-                lastSyncLog = "Registry offline. Loaded bundled fallback persona."
+                lastSyncLog = "Registry 404/Empty. Loaded bundled fallback persona."
             }
         } catch {
+            print("[RegistryService] Network error during fetch: \(error)")
             self.availablePersonas = ["Einstein_Localized"]
             lastSyncLog = "Network error. Loaded bundled fallback persona."
         }
@@ -80,15 +100,29 @@ public final class RegistryService: ObservableObject {
         let personaUrl = repoUrl + "/\(name)"
         guard let url = URL(string: personaUrl) else { return }
         
+        var request = URLRequest(url: url)
+        request.setValue("SwiftBuddy-macOS/1.0", forHTTPHeaderField: "User-Agent")
+        
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let httpResponse = response as? HTTPURLResponse {
+                print("[RegistryService] Download \(name) HTTP Status: \(httpResponse.statusCode)")
+                if httpResponse.statusCode != 200 {
+                    let bodyString = String(data: data, encoding: .utf8) ?? "<binary/empty>"
+                    print("[RegistryService] GitHub response body: \(bodyString)")
+                }
+            }
+            
             if let files = try? JSONDecoder().decode([GithubNode].self, from: data) {
                 for file in files where file.type == "file" && file.name.hasSuffix(".txt") {
                     let roomName = file.name.replacingOccurrences(of: ".txt", with: "")
                     guard let dlURLString = file.download_url, let dlURL = URL(string: dlURLString) else { continue }
                     
                     lastSyncLog = "Fetching \(roomName)..."
-                    let (fileData, _) = try await URLSession.shared.data(from: dlURL)
+                    
+                    var dlRequest = URLRequest(url: dlURL)
+                    dlRequest.setValue("SwiftBuddy-macOS/1.0", forHTTPHeaderField: "User-Agent")
+                    let (fileData, _) = try await URLSession.shared.data(for: dlRequest)
                     guard let textContent = String(data: fileData, encoding: .utf8) else { continue }
                     
                     let chunks = textContent.components(separatedBy: "\n\n")
@@ -109,6 +143,7 @@ public final class RegistryService: ObservableObject {
                 lastSyncLog = "Failed to parse persona files."
             }
         } catch {
+            print("[RegistryService] Network error downloading \(name): \(error)")
             lastSyncLog = "Failed to download \(name): \(error.localizedDescription)"
         }
         
