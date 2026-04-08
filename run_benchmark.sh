@@ -85,6 +85,7 @@ options=(
     "Qwen3.5-7B-Instruct-4bit"
     "Qwen3.5-14B-Instruct-4bit"
     "phi-4-mlx-4bit"
+    "baa-ai/GLM-5.1-RAM-270GB-MLX"
     "Custom (Enter your own Hub ID)"
     "Quit"
 )
