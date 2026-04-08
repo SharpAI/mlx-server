@@ -84,6 +84,7 @@ struct ModelPickerView: View {
                     }
                 }
             }
+            .frame(minWidth: 600, minHeight: 600)
             .environmentObject(engine)
         }
     }
@@ -314,12 +315,14 @@ struct HFSearchTab: View {
 
             // ── Results ────────────────────────────────────────────────────
             if service.isSearching && service.results.isEmpty {
-                Spacer()
-                ProgressView("Searching HuggingFace…")
-                    .foregroundStyle(.secondary)
-                Spacer()
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text("Searching HuggingFace…")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let err = service.errorMessage {
-                Spacer()
                 VStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle")
                         .font(.largeTitle)
@@ -330,9 +333,8 @@ struct HFSearchTab: View {
                         .multilineTextAlignment(.center)
                 }
                 .padding()
-                Spacer()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if service.results.isEmpty && !query.isEmpty {
-                Spacer()
                 VStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
                         .font(.largeTitle)
@@ -341,7 +343,7 @@ struct HFSearchTab: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
-                Spacer()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 16) {

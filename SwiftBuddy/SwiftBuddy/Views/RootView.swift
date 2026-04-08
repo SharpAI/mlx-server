@@ -38,10 +38,8 @@ struct RootView: View {
                 }
                 .onAppear {
                     viewModel.engine = engine
-                    if case .idle = engine.state { showModelPicker = true }
                 }
                 .onChange(of: engine.state) { _, state in
-                    if case .idle = state { showModelPicker = true }
                 }
             #else
             iOSTabView
