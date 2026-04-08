@@ -123,8 +123,14 @@ public final class HFModelSearchService: ObservableObject {
     // MARK: — Private
 
     private func fetchPage() async {
+        print("HFSearch: fetchPage started. Query: '\(currentQuery)' Sort: \(currentSort.rawValue)")
         isSearching = true
         errorMessage = nil
+
+        var finalQuery = currentQuery
+        if !strictMLX && !finalQuery.lowercased().contains("mlx") && !finalQuery.isEmpty {
+            finalQuery = finalQuery + " mlx"
+        }
 
         var components = URLComponents(string: hfBase)!
         var queryItems: [URLQueryItem] = [
@@ -134,43 +140,55 @@ public final class HFModelSearchService: ObservableObject {
             URLQueryItem(name: "offset",       value: "\(currentOffset)"),
             URLQueryItem(name: "full",         value: "false"),
         ]
-        
-        if strictMLX {
-            queryItems.append(URLQueryItem(name: "library", value: "mlx"))
-        }
-
-        var finalQuery = currentQuery
-        if !strictMLX && !finalQuery.lowercased().contains("mlx") && !finalQuery.isEmpty {
-            finalQuery = finalQuery + " mlx"
-        }
-        
         if !finalQuery.isEmpty {
             queryItems.append(URLQueryItem(name: "search", value: finalQuery))
+        }
+        if strictMLX {
+            queryItems.append(URLQueryItem(name: "library", value: "mlx"))
         }
         components.queryItems = queryItems
 
         guard let url = components.url else {
+            print("HFSearch: Failed to build URL")
             isSearching = false
             return
         }
 
+        print("HFSearch: Fetching from url: \(url.absoluteString)")
+
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            guard let http = response as? HTTPURLResponse else {
+                print("HFSearch: Response was not HTTPURLResponse")
                 errorMessage = "HuggingFace search unavailable"
                 isSearching = false
                 return
             }
-            let page = try JSONDecoder().decode([HFModelResult].self, from: data)
-            results.append(contentsOf: page)
-            hasMore = page.count == pageSize
-            currentOffset += page.count
+            print("HFSearch: Response status code: \(http.statusCode)")
+            if http.statusCode != 200 {
+                errorMessage = "HuggingFace API returned \(http.statusCode)"
+                isSearching = false
+                return
+            }
+            
+            do {
+                let page = try JSONDecoder().decode([HFModelResult].self, from: data)
+                print("HFSearch: Decoded \(page.count) models")
+                results.append(contentsOf: page)
+                hasMore = page.count == pageSize
+                currentOffset += page.count
+            } catch {
+                print("HFSearch: Decode error: \(error)")
+                errorMessage = "Decode error: \(error.localizedDescription)"
+            }
         } catch is CancellationError {
-            // no-op
+            print("HFSearch: Task was cancelled")
         } catch {
+            print("HFSearch: URLSession threw error: \(error)")
             errorMessage = "Search failed: \(error.localizedDescription)"
         }
 
         isSearching = false
+        print("HFSearch: fetchPage finished")
     }
 }
