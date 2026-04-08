@@ -13,6 +13,7 @@ final class ChatViewModel: ObservableObject {
     @Published var isGenerating: Bool = false
     @Published var config: GenerationConfig = .default
     @Published var systemPrompt: String = ""
+    public var currentWing: String? = nil
 
     weak var engine: InferenceEngine?
     private var generationTask: Task<Void, Never>?
@@ -28,10 +29,25 @@ final class ChatViewModel: ObservableObject {
         isGenerating = true
         streamingText = ""
         thinkingText = nil
+        
+        // --- INVISIBLE RAG INJECTION ---
+        var dynamicSystemPrompt = systemPrompt
+        if let wing = currentWing, !wing.isEmpty {
+            do {
+                let facts = try MemoryPalaceService.shared.searchMemories(query: userText, wingName: wing)
+                if !facts.isEmpty {
+                    let factList = facts.map { "- [\($0.hallType)] \($0.text)" }.joined(separator: "\n")
+                    let ragDirective = "\n\nCRITICAL CONTEXT FROM MEMORY PALACE:\n\(factList)\n\nYou must explicitly use these facts to answer if they are relevant to the user query."
+                    dynamicSystemPrompt += ragDirective
+                }
+            } catch {
+                print("RAG Pre-Fetch Failed: \(error.localizedDescription)")
+            }
+        }
 
         var fullMessages = messages
-        if !systemPrompt.isEmpty {
-            fullMessages.insert(.system(systemPrompt), at: 0)
+        if !dynamicSystemPrompt.isEmpty {
+            fullMessages.insert(.system(dynamicSystemPrompt), at: 0)
         }
 
         generationTask = Task {
