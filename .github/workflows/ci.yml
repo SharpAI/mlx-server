@@ -72,7 +72,7 @@ jobs:
           find .build -type d -name "MacOS" -exec cp /tmp/mlx_venv/lib/python*/site-packages/mlx/lib/mlx.metallib {}/ \;
 
       - name: SwiftBuddy Tests (MemPalace & Lifecycle)
-        run: swift test --skip-build --filter SwiftBuddyTests
+        run: swift test --skip-build --filter SwiftBuddyTests --disable-swift-testing
 
       - name: Cache MLX model
         uses: actions/cache@v4
