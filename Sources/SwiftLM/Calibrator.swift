@@ -202,7 +202,7 @@ enum Calibrator {
             tokPerSec: best.tokPerSec,
             prefillTokPerSec: best.prefillTokPerSec,
             ttftMs: best.ttft,
-            memoryPeakMB: Int(Double(GPU.activeMemory) / 1e6),
+            memoryPeakMB: Int(Double(GPU.Memory.activeMemory) / 1e6),
             calibratedAt: Date(),
             calibrationSeconds: elapsed
         )

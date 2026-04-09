@@ -520,7 +520,7 @@ struct MLXServer: AsyncParsableCommand {
 
         // Health (enhanced v3 with memory + stats + partition plan)
         let isSSDStream = self.streamExperts  // capture before escaping closure
-        router.get("/health") { _, _ -> Response in
+        router.get("/health") { [partitionPlan] _, _ -> Response in
             let activeMemMB = Memory.activeMemory / (1024 * 1024)
             let peakMemMB = Memory.peakMemory / (1024 * 1024)
             let cacheMemMB = Memory.cacheMemory / (1024 * 1024)
@@ -2255,14 +2255,14 @@ struct AnyCodable: @unchecked Sendable {
 
     static func toSendable(_ dict: [String: AnyCodable]?) -> [String: any Sendable]? {
         guard let dict else { return nil }
-        return dict.mapValues { $0.value as! any Sendable }
+        return dict.mapValues { $0.value as any Sendable }
     }
 }
 
 extension AnyCodable: Decodable {
     init(from decoder: Swift.Decoder) throws {
         let c = try decoder.singleValueContainer()
-        if (try? c.decodeNil()) == true { value = NSNull(); return }
+        if c.decodeNil() { value = NSNull(); return }
         if let b = try? c.decode(Bool.self)   { value = b; return }
         if let i = try? c.decode(Int.self)    { value = i; return }
         if let d = try? c.decode(Double.self) { value = d; return }

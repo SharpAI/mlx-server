@@ -40,7 +40,7 @@ public struct MemoryUtils {
         if kerr == KERN_SUCCESS {
             // internal = private pages (includes compressed + swapped)
             // phys_footprint is capped by RAM. internal is not.
-            let internalBytes = Int(info.internal)
+            let _ = Int(info.internal)
             let compressedBytes = Int(info.compressed)
             // Total demand = what's physically wired + what got compressed/swapped
             let total = Int(info.phys_footprint) + compressedBytes

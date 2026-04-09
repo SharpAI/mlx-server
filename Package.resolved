@@ -28,6 +28,24 @@
       }
     },
     {
+      "identity" : "mlx-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/SharpAI/mlx-swift.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "6d3a11f3439aa21af1e07761778d4a9f466f8a8b"
+      }
+    },
+    {
+      "identity" : "mlx-swift-lm",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/SharpAI/mlx-swift-lm.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "0e0f3609e29d150a56646958c0b7bde6a89c7543"
+      }
+    },
+    {
       "identity" : "swift-algorithms",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-algorithms.git",
@@ -268,15 +286,6 @@
       "state" : {
         "revision" : "58c4bc11963a140358d791f678a60a2745a23146",
         "version" : "1.2.1"
-      }
-    },
-    {
-      "identity" : "swiftsoup",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/scinfu/SwiftSoup.git",
-      "state" : {
-        "revision" : "6c7915e16f729857aec3e99068c361e58a00ed68",
-        "version" : "2.13.4"
       }
     },
     {
