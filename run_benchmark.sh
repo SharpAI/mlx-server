@@ -461,10 +461,7 @@ EOF
     },
     {
       "role": "user",
-      "content": [
-        {"type": "text", "text": "Are there any instruments playing in this audio track? List them."},
-        {"type": "input_audio", "input_audio": {"data": "${BASE64_AUDIO}", "format": "wav"}}
-      ]
+      "content": "Are there any instruments playing in this audio track? List them."
     }
   ]
 }
