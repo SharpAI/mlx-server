@@ -1,5 +1,6 @@
 // ChatView.swift — Premium chat interface (iOS + macOS)
 import SwiftUI
+import SwiftData
 #if canImport(MLXInferenceCore)
 import MLXInferenceCore
 #endif
@@ -7,11 +8,11 @@ import MLXInferenceCore
 struct ChatView: View {
     @ObservedObject var viewModel: ChatViewModel
     @EnvironmentObject private var engine: InferenceEngine
+    @Query(sort: \PalaceWing.createdDate) var wings: [PalaceWing]
 
     // macOS-only sheet control (iOS: these are tabs)
     var showSettings: Binding<Bool>? = nil
     var showModelPicker: Binding<Bool>? = nil
-
     @State private var inputText = ""
     @FocusState private var inputFocused: Bool
 
@@ -26,12 +27,27 @@ struct ChatView: View {
 
                 // ── Engine state banner ──────────────────────────────────────
                 engineBanner
+                
+                // ── Memory Active Badge ──────────────────────────────────────
+                if let wing = viewModel.currentWing {
+                    HStack {
+                        Image(systemName: "brain.head.profile")
+                        Text("\(wing)'s Memory Active")
+                    }
+                    .font(.caption2.bold())
+                    .foregroundStyle(SwiftBuddyTheme.accent)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(SwiftBuddyTheme.accent.opacity(0.18))
+                    .clipShape(Capsule())
+                    .padding(.vertical, 6)
+                }
 
                 // ── Input bar ────────────────────────────────────────────────
                 inputBar
             }
         }
-        .navigationTitle("SwiftBuddy Chat")
+        .navigationTitle(viewModel.currentWing != nil ? "Chatting with \(viewModel.currentWing!)" : "SwiftBuddy Chat")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { iOSToolbar }
@@ -54,16 +70,22 @@ struct ChatView: View {
                 } else {
                     LazyVStack(alignment: .leading, spacing: 14) {
                         ForEach(viewModel.messages) { message in
-                            MessageBubble(message: message)
-                                .id(message.id)
-                                .environmentObject(engine)
+                            MessageBubble(
+                                message: message,
+                                isRPGMode: viewModel.currentWing != nil,
+                                personaName: viewModel.currentWing
+                            )
+                            .id(message.id)
+                            .environmentObject(engine)
                         }
                         if !viewModel.streamingText.isEmpty || viewModel.thinkingText != nil {
                             StreamingBubble(
                                 text: viewModel.streamingText,
-                                thinkingText: viewModel.thinkingText
+                                thinkingText: viewModel.thinkingText,
+                                isRPGMode: viewModel.currentWing != nil,
+                                personaName: viewModel.currentWing
                             )
-                            .id("streaming")
+                            .id("generating")
                             .environmentObject(engine)
                         }
                         Color.clear.frame(height: 1).id("bottom")
@@ -90,22 +112,7 @@ struct ChatView: View {
         switch engine.state {
 
         case .downloading(let progress, let speed):
-            VStack(spacing: 20) {
-                downloadRing(progress: progress)
-                VStack(spacing: 6) {
-                    Text("Downloading model…")
-                        .font(.headline)
-                        .foregroundStyle(SwiftBuddyTheme.textPrimary)
-                    Text(speed.isEmpty ? "Preparing…" : speed)
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(SwiftBuddyTheme.textSecondary)
-                }
-                Text("You'll be able to chat once the download completes.")
-                    .font(.caption)
-                    .foregroundStyle(SwiftBuddyTheme.textTertiary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 40)
-            }
+            DownloadAnimationView(progress: progress, speed: speed)
 
         case .loading:
             VStack(spacing: 16) {
@@ -177,7 +184,7 @@ struct ChatView: View {
             brandMark
 
             VStack(spacing: 6) {
-                Text("SwiftBuddy Chat")
+                Text(viewModel.currentWing != nil ? "System Linked to \(viewModel.currentWing!)" : "SwiftBuddy Chat")
                     .font(.title2.weight(.bold))
                     .foregroundStyle(SwiftBuddyTheme.textPrimary)
 
@@ -199,25 +206,6 @@ struct ChatView: View {
         }
     }
 
-    // Download ring
-    private func downloadRing(progress: Double) -> some View {
-        ZStack {
-            Circle()
-                .stroke(SwiftBuddyTheme.accent.opacity(0.15), lineWidth: 6)
-            Circle()
-                .trim(from: 0, to: progress)
-                .stroke(
-                    SwiftBuddyTheme.avatarGradient,
-                    style: StrokeStyle(lineWidth: 6, lineCap: .round)
-                )
-                .rotationEffect(.degrees(-90))
-                .animation(.linear(duration: 0.3), value: progress)
-            Text("\(Int(progress * 100))%")
-                .font(.caption.monospacedDigit().weight(.semibold))
-                .foregroundStyle(SwiftBuddyTheme.textPrimary)
-        }
-        .frame(width: 72, height: 72)
-    }
 
     // MARK: — Engine Banner (slim status strip above input)
 
@@ -256,7 +244,20 @@ struct ChatView: View {
         case .error(let msg):
             bannerRow(icon: "exclamationmark.triangle.fill", text: msg, color: SwiftBuddyTheme.error)
         case .ready, .generating:
-            EmptyView()
+            if engine.maxContextWindow > 0 && !viewModel.messages.isEmpty {
+                HStack {
+                    Spacer()
+                    let percent = Double(engine.activeContextTokens) / Double(engine.maxContextWindow)
+                    let displayColor: Color = percent > 0.85 ? SwiftBuddyTheme.error : (percent > 0.6 ? SwiftBuddyTheme.warning : SwiftBuddyTheme.textTertiary)
+                    Text("Context: \(engine.activeContextTokens) / \(engine.maxContextWindow)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(displayColor)
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 2)
+            } else {
+                EmptyView()
+            }
         }
     }
 
@@ -278,9 +279,10 @@ struct ChatView: View {
 
     private var inputBar: some View {
         HStack(alignment: .bottom, spacing: 10) {
+            
             // Text field with frosted glass pill
             HStack(alignment: .bottom) {
-                TextField("Message", text: $inputText, axis: .vertical)
+                TextField(viewModel.currentWing != nil ? "Message \(viewModel.currentWing!)..." : "Message", text: $inputText, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(.body))
                     .foregroundStyle(SwiftBuddyTheme.textPrimary)
@@ -376,11 +378,25 @@ struct ChatView: View {
                 .transition(.opacity)
             }
         }
-        // New conversation
+        // Persona map selector
         ToolbarItem(placement: .topBarTrailing) {
-            Button { viewModel.newConversation() } label: {
-                Image(systemName: "square.and.pencil")
-                    .foregroundStyle(SwiftBuddyTheme.accent)
+            Menu {
+                Button("No Persona") { viewModel.currentWing = nil }
+                Divider()
+                ForEach(wings) { wing in
+                    Button(wing.name) { viewModel.currentWing = wing.name }
+                }
+            } label: {
+                Image(systemName: viewModel.currentWing == nil ? "brain" : "brain.head.profile")
+                    .foregroundStyle(viewModel.currentWing == nil ? SwiftBuddyTheme.textSecondary : .orange)
+            }
+        }
+        
+        // Clear Conversation
+        ToolbarItem(placement: .topBarTrailing) {
+            Button { withAnimation { viewModel.clearHistory() } } label: {
+                Image(systemName: "trash")
+                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
             }
         }
     }
@@ -412,8 +428,21 @@ struct ChatView: View {
     @ToolbarContentBuilder
     private var macOSToolbar: some ToolbarContent {
         ToolbarItem {
-            Button { viewModel.newConversation() } label: {
-                Label("New Chat", systemImage: "square.and.pencil")
+            Menu {
+                Button("No Persona") { viewModel.currentWing = nil }
+                Divider()
+                ForEach(wings) { wing in
+                    Button(wing.name) { viewModel.currentWing = wing.name }
+                }
+            } label: {
+                Image(systemName: viewModel.currentWing == nil ? "brain" : "brain.head.profile")
+                    .foregroundStyle(viewModel.currentWing == nil ? SwiftBuddyTheme.textSecondary : .orange)
+            }
+        }
+        
+        ToolbarItem {
+            Button { withAnimation { viewModel.clearHistory() } } label: {
+                Label("Clear Chat", systemImage: "trash")
             }
         }
         ToolbarItem {
@@ -421,6 +450,7 @@ struct ChatView: View {
                 Label("Settings", systemImage: "slider.horizontal.3")
             }
         }
+        
     }
     #endif
 }
@@ -452,5 +482,113 @@ extension ModelState {
         case .generating:                  return "Generating"
         case .error:                       return "Error"
         }
+    }
+}
+import SwiftUI
+
+struct DownloadAnimationView: View {
+    let progress: Double
+    let speed: String
+    
+    @State private var isAnimating = false
+    @State private var textFlicker = false
+    
+    var body: some View {
+        VStack(spacing: 30) {
+            ZStack {
+                // Background Ambient Glow
+                Circle()
+                    .fill(SwiftBuddyTheme.accent.opacity(0.1))
+                    .frame(width: 140, height: 140)
+                    .blur(radius: isAnimating ? 20 : 10)
+                
+                // Outer Runic Circle (Dashed, Rotating Clockwise)
+                Circle()
+                    .stroke(style: StrokeStyle(lineWidth: 1, dash: [4, 8, 2, 8]))
+                    .foregroundStyle(SwiftBuddyTheme.accent.opacity(0.4))
+                    .frame(width: 130, height: 130)
+                    .rotationEffect(.degrees(isAnimating ? 360 : 0))
+                    .animation(
+                        .linear(duration: 20).repeatForever(autoreverses: false),
+                        value: isAnimating
+                    )
+                
+                // Middle Ritual Circle (Thick Dashed, Rotating Counter-Clockwise)
+                Circle()
+                    .stroke(style: StrokeStyle(lineWidth: 2, dash: [10, 5, 2, 5]))
+                    .foregroundStyle(SwiftBuddyTheme.accent.opacity(0.6))
+                    .frame(width: 100, height: 100)
+                    .rotationEffect(.degrees(isAnimating ? -360 : 0))
+                    .animation(
+                        .linear(duration: 15).repeatForever(autoreverses: false),
+                        value: isAnimating
+                    )
+                
+                // Dynamic Completion Progress Arc (Liquid Arc filling up)
+                Circle()
+                    .trim(from: 0, to: progress)
+                    .stroke(
+                        SwiftBuddyTheme.avatarGradient,
+                        style: StrokeStyle(lineWidth: 4, lineCap: .round)
+                    )
+                    .frame(width: 115, height: 115)
+                    .rotationEffect(.degrees(-90))
+                    .animation(.spring(response: 0.5, dampingFraction: 0.8), value: progress)
+                    .shadow(color: SwiftBuddyTheme.accent, radius: progress > 0 ? 5 : 0)
+                
+                // Core "Persona Soul" Crystal
+                Image(systemName: "diamond.inset.filled")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 36, height: 36)
+                    .foregroundStyle(SwiftBuddyTheme.cyan)
+                    .symbolEffect(.pulse, options: .repeating)
+                    .shadow(color: SwiftBuddyTheme.cyan, radius: isAnimating ? 15 : 5)
+                    .scaleEffect(isAnimating ? 1.1 : 0.9)
+                    .animation(
+                        .easeInOut(duration: 1.5).repeatForever(autoreverses: true),
+                        value: isAnimating
+                    )
+            }
+            .frame(width: 150, height: 150)
+            .padding(.top, 20)
+            
+            // Decrypting Text Area
+            VStack(spacing: 8) {
+                Text("SUMMONING PERSONA")
+                    .font(.system(.subheadline, design: .monospaced, weight: .bold))
+                    .tracking(4)
+                    .foregroundStyle(SwiftBuddyTheme.cyan)
+                    .shadow(color: SwiftBuddyTheme.cyan.opacity(0.5), radius: 2)
+                    .opacity(textFlicker ? 0.8 : 1.0)
+                    .animation(.randomFlicker, value: textFlicker)
+                
+                HStack(alignment: .lastTextBaseline, spacing: 4) {
+                    Text("\(Int(progress * 100))")
+                        .font(.system(size: 32, design: .monospaced))
+                        .fontWeight(.heavy)
+                        .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                    Text("%")
+                        .font(.system(size: 20, design: .monospaced))
+                        .foregroundStyle(SwiftBuddyTheme.textSecondary)
+                }
+                
+                Text(speed.isEmpty ? "Casting initial logic runes..." : speed)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(SwiftBuddyTheme.accent)
+                    .opacity(0.8)
+            }
+        }
+        .onAppear {
+            isAnimating = true
+            textFlicker = true
+        }
+    }
+}
+
+// Helper for "cryptographic" flickering effect on the Summon banner
+extension Animation {
+    static var randomFlicker: Animation {
+        .easeInOut(duration: 0.1).repeatForever(autoreverses: true).delay(Double.random(in: 0...0.5))
     }
 }

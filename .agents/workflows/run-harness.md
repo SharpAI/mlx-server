@@ -1,5 +1,5 @@
 ---
-description: Run the persistent SwiftBuddy TDD harness loop (memory handling + model management)
+description: Run the persistent SwiftBuddy TDD harness loop (memory handling + model management + VLM + audio)
 ---
 // turbo-all
 
@@ -27,12 +27,41 @@ This workflow executes the persistent TDD harness defined in `.agents/harness/`.
    - Load any relevant fixture files from `.agents/harness/model-management/fixtures/`.
    - Follow the Agent Loop Protocol: write test → run → implement → verify → update status.
 
+5. **VLM Pipeline Harness**:
+   - Read `.agents/harness/vlm/features.md` to find all 🔲 TODO items.
+   - For each TODO, read the acceptance criteria in `.agents/harness/vlm/acceptance.md`.
+   - Load any relevant fixture files from `.agents/harness/vlm/fixtures/`.
+   - Follow the Agent Loop Protocol: write test → run → implement → verify → update status.
+
+6. **Audio Pipeline Harness**:
+   - Read `.agents/harness/audio/features.md` to find all 🔲 TODO items.
+   - For each TODO, read the acceptance criteria in `.agents/harness/audio/acceptance.md`.
+   - Load any relevant fixture files from `.agents/harness/audio/fixtures/`.
+   - Follow the Agent Loop Protocol: write test → run → implement → verify → update status.
+
+7. **GraphPalace Harness**:
+   - Read `.agents/harness/graph-palace/features.md` to find all 🔲 TODO items.
+   - For each TODO, read the acceptance criteria in `.agents/harness/graph-palace/acceptance.md`.
+   - Load any relevant fixture files from `.agents/harness/graph-palace/fixtures/` if available.
+   - Follow the Agent Loop Protocol: write test → run → implement → verify → update status.
+
 // turbo-all
-5. Run the test suite:
-   ```
+7. Run the test suite:
+   ```bash
    swift test --filter SwiftBuddyTests
    ```
 
-6. Write a timestamped run log to the appropriate `runs/` directory.
+8. Validate VLM pipeline with real-world End-to-End processing:
+   ```bash
+   echo -e "4\n11\nmlx-community/Qwen2-VL-2B-Instruct-4bit" | ./run_benchmark.sh
+   ```
 
-7. Report completion: list all features with their final status.
+9. Validate ALM pipeline with real-world End-to-End processing:
+   ```bash
+   echo -e "5\n3" | ./run_benchmark.sh
+   ```
+
+10. Write a timestamped run log to the appropriate `runs/` directory detailing the status and test output.
+
+11. Report completion: list all features with their final status.
+

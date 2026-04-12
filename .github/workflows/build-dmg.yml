@@ -1,0 +1,51 @@
+name: Build macOS DMG (Ad-Hoc)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'SwiftBuddy/**/*.swift'
+      - '.github/workflows/build-dmg.yml'
+      - 'scripts/build_dmg.sh'
+
+jobs:
+  build-and-package:
+    runs-on: macos-15
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build Ad-Hoc App
+        run: |
+          # Build the raw unsigned .app binary directly to bypass xcodebuild archive restrictions
+          xcodebuild clean build \
+            -project SwiftBuddy/SwiftBuddy.xcodeproj \
+            -scheme SwiftBuddy \
+            -destination "generic/platform=macOS" \
+            -configuration Release \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_ENTITLEMENTS="" \
+            CODE_SIGNING_ALLOWED=NO \
+            TARGET_BUILD_DIR="$RUNNER_TEMP/build" \
+            BUILT_PRODUCTS_DIR="$RUNNER_TEMP/build"
+            
+      - name: Install macOS Packaging Tools
+        run: brew install create-dmg
+
+      - name: Package Ad-Hoc DMG
+        run: |
+          chmod +x scripts/build_dmg.sh
+          # The built .app is sitting right in our designated output directory
+          ./scripts/build_dmg.sh "$RUNNER_TEMP/build/SwiftBuddy.app"
+
+      - name: Upload DMG Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SwiftBuddy-macOS-Unsigned
+          path: output/*.dmg
+          retention-days: 14

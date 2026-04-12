@@ -15,6 +15,7 @@ struct ModelPickerView: View {
     @State private var device = DeviceProfile.current
     @State private var showManagement = false
     @State private var pendingCellularModelId: String? = nil
+    @State private var deletionError: String? = nil
 
     private var downloadManager: ModelDownloadManager { engine.downloadManager }
 
@@ -26,7 +27,8 @@ struct ModelPickerView: View {
                     device: device,
                     onTap: handleModelTap,
                     showManagement: $showManagement,
-                    onSearchHFTap: { showHFSearch = true }
+                    onSearchHFTap: { showHFSearch = true },
+                    onDeleteModel: deleteModel
                 )
             }
             .navigationTitle("Models")
@@ -66,6 +68,20 @@ struct ModelPickerView: View {
             } message: {
                 Text("This model is large. Downloading over cellular may incur data charges.")
             }
+            .safeAreaInset(edge: .bottom) {
+                if let (modelId, progress) = downloadManager.activeDownloads.first {
+                    FloatingDownloadBanner(modelId: modelId, progress: progress)
+                        .padding(.vertical, 8)
+                }
+            }
+            .alert("Deletion Error", isPresented: Binding(
+                get: { deletionError != nil },
+                set: { if !$0 { deletionError = nil } }
+            ), actions: {
+                Button("OK") { deletionError = nil }
+            }, message: {
+                Text(deletionError ?? "")
+            })
         }
         .sheet(isPresented: $showHFSearch) {
             NavigationStack {
@@ -84,6 +100,13 @@ struct ModelPickerView: View {
                     }
                 }
             }
+            .safeAreaInset(edge: .bottom) {
+                if let (modelId, progress) = engine.downloadManager.activeDownloads.first {
+                    FloatingDownloadBanner(modelId: modelId, progress: progress)
+                        .padding(.vertical, 8)
+                }
+            }
+            .frame(minWidth: 600, minHeight: 600)
             .environmentObject(engine)
         }
     }
@@ -96,9 +119,26 @@ struct ModelPickerView: View {
             onSelect(modelId)
         }
     }
+
+    private func deleteModel(_ modelId: String) {
+        do {
+            if case .ready(let id) = engine.state, id == modelId {
+                engine.unload()
+                RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+            }
+            try downloadManager.delete(modelId)
+        } catch {
+            deletionError = error.localizedDescription
+        }
+    }
 }
 
-// MARK: — Catalog Tab (curated list)
+enum CatalogCategory: String, CaseIterable, Identifiable {
+    case staffPicks = "Staff Picks"
+    case downloaded = "Downloaded"
+    case all = "All Models"
+    var id: String { rawValue }
+}
 
 private struct CatalogTab: View {
     let downloadManager: ModelDownloadManager
@@ -106,111 +146,87 @@ private struct CatalogTab: View {
     let onTap: (String) -> Void
     @Binding var showManagement: Bool
     let onSearchHFTap: () -> Void
+    let onDeleteModel: (String) -> Void
 
-    private var recommendedModels: [ModelEntry] { downloadManager.modelsForDevice() }
-    private var otherModels: [ModelEntry] {
-        ModelCatalog.all.filter { m in !recommendedModels.contains(where: { $0.id == m.id }) }
-    }
+    @State private var selectedCategory: CatalogCategory? = .staffPicks
 
     var body: some View {
-        List {
-            deviceHeader
-
-            if !downloadManager.downloadedModels.isEmpty {
-                Section {
-                    ForEach(downloadManager.downloadedModels) { downloaded in
-                        if let entry = ModelCatalog.all.first(where: { $0.id == downloaded.id }) {
-                            ModelRow(
-                                model: entry,
-                                downloadStatus: .downloaded(sizeString: downloaded.displaySize),
-                                fitStatus: ModelCatalog.fitStatus(for: entry, on: device),
-                                downloadProgress: downloadManager.activeDownloads[entry.id],
-                                onTap: { onTap(entry.id) },
-                                onDelete: { try? downloadManager.delete(entry.id) }
-                            )
+        NavigationSplitView {
+            List(selection: $selectedCategory) {
+                ForEach(CatalogCategory.allCases) { category in
+                    Text(category.rawValue).tag(category)
+                }
+            }
+            .navigationTitle("Categories")
+            #if os(macOS)
+            .navigationSplitViewColumnWidth(min: 150, ideal: 200, max: 250)
+            #endif
+        } detail: {
+            ScrollView {
+                deviceHeader
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 16)], spacing: 16) {
+                    Group {
+                        switch selectedCategory {
+                        case .downloaded:
+                            if downloadManager.downloadedModels.isEmpty {
+                                Text("No models downloaded locally.").foregroundStyle(.secondary)
+                            } else {
+                                ForEach(downloadManager.downloadedModels) { downloaded in
+                                    let entry = ModelCatalog.all.first(where: { $0.id == downloaded.id }) ?? ModelEntry(id: downloaded.id, displayName: String(downloaded.id.split(separator: "/").last ?? ""), parameterSize: "Hub Model", quantization: "Native", ramRequiredGB: 0, ramRecommendedGB: 0)
+                                    ModelCard(model: entry, downloadStatus: .downloaded(sizeString: downloaded.displaySize), fitStatus: ModelCatalog.fitStatus(for: entry, on: device), downloadProgress: downloadManager.activeDownloads[entry.id], onTap: { onTap(entry.id) }, onDelete: { onDeleteModel(entry.id) })
+                                }
+                            }
+                        case .staffPicks:
+                            ForEach(ModelCatalog.staffPicks) { model in
+                                ModelCard(model: model, downloadStatus: downloadManager.isDownloaded(model.id) ? .downloaded(sizeString: "") : .available, fitStatus: ModelCatalog.fitStatus(for: model, on: device), downloadProgress: downloadManager.activeDownloads[model.id], onTap: { onTap(model.id) }, onDelete: nil)
+                            }
+                        case .all:
+                            ForEach(ModelCatalog.all) { model in
+                                ModelCard(model: model, downloadStatus: downloadManager.isDownloaded(model.id) ? .downloaded(sizeString: "") : .available, fitStatus: ModelCatalog.fitStatus(for: model, on: device), downloadProgress: downloadManager.activeDownloads[model.id], onTap: { onTap(model.id) }, onDelete: nil)
+                            }
+                        case .none:
+                            Text("Select a category").foregroundStyle(.secondary)
                         }
                     }
-                } header: {
-                    HStack {
-                        Text("Downloaded")
-                        Spacer()
-                        Button("Manage") { showManagement = true }
-                            .font(.caption)
-                    }
                 }
+                .padding()
             }
-
-            if !recommendedModels.isEmpty {
-                Section("Recommended for your device") {
-                    ForEach(recommendedModels) { model in
-                        ModelRow(
-                            model: model,
-                            downloadStatus: downloadManager.isDownloaded(model.id) ? .downloaded(sizeString: "") : .available,
-                            fitStatus: ModelCatalog.fitStatus(for: model, on: device),
-                            downloadProgress: downloadManager.activeDownloads[model.id],
-                            onTap: { onTap(model.id) },
-                            onDelete: nil
-                        )
+            .navigationTitle(selectedCategory?.rawValue ?? "")
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button(action: onSearchHFTap) {
+                        Label("Search HF", systemImage: "magnifyingglass")
                     }
                 }
-            }
-
-            if !otherModels.isEmpty {
-                Section("All Models") {
-                    ForEach(otherModels) { model in
-                        ModelRow(
-                            model: model,
-                            downloadStatus: downloadManager.isDownloaded(model.id) ? .downloaded(sizeString: "") : .available,
-                            fitStatus: ModelCatalog.fitStatus(for: model, on: device),
-                            downloadProgress: downloadManager.activeDownloads[model.id],
-                            onTap: { onTap(model.id) },
-                            onDelete: nil
-                        )
-                    }
-                }
-            }
-            
-            Section {
-                Button(action: onSearchHFTap) {
-                    HStack {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundStyle(.blue)
-                        Text("Search HuggingFace MLX models")
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                    }
-                    .padding(14)
-                    .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10))
-                }
-                .buttonStyle(.plain)
             }
         }
-        .listStyle(.inset)
     }
 
     private var deviceHeader: some View {
-        Section {
-            HStack(spacing: 12) {
-                Image(systemName: "memorychip")
-                    .font(.title2)
-                    .foregroundStyle(.blue)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Apple Silicon")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                    Text(String(format: "%.0f GB RAM", device.physicalRAMGB))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                if downloadManager.isOffline {
-                    Label("Offline", systemImage: "wifi.slash")
-                        .font(.caption.bold())
-                        .foregroundStyle(.orange)
-                }
+        HStack(spacing: 12) {
+            Image(systemName: "memorychip")
+                .font(.title2)
+                .foregroundStyle(.blue)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Apple Silicon")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Text(String(format: "%.0f GB RAM", device.physicalRAMGB))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .padding(.vertical, 4)
+            Spacer()
+            if downloadManager.isOffline {
+                Label("Offline", systemImage: "wifi.slash")
+                    .font(.caption.bold())
+                    .foregroundStyle(.orange)
+            }
         }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 16)
+        .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+        .padding(.horizontal, 16)
+        .padding(.top, 16)
     }
 }
 
@@ -219,9 +235,10 @@ private struct CatalogTab: View {
 struct HFSearchTab: View {
     let onSelect: (String) -> Void
 
-    @StateObject private var service = HFModelSearchService.shared
+    @ObservedObject private var service = HFModelSearchService.shared
     @State private var query = ""
     @State private var sort = HFSortOption.trending
+    @State private var sizeFilter = HFSizeFilter.all
 
     var body: some View {
         VStack(spacing: 0) {
@@ -250,7 +267,7 @@ struct HFSearchTab: View {
                     .toggleStyle(.switch)
                     .padding(.horizontal, 4)
                     .onChange(of: service.strictMLX) { _, _ in
-                        service.search(query: query, sort: sort)
+                        service.search(query: query, sort: sort, sizeFilter: sizeFilter)
                     }
 
                 // ─────────────────────────────────────────────────────────────
@@ -260,7 +277,7 @@ struct HFSearchTab: View {
                         ForEach(HFSortOption.allCases, id: \.self) { option in
                             Button {
                                 sort = option
-                                service.search(query: query, sort: sort)
+                                service.search(query: query, sort: sort, sizeFilter: sizeFilter)
                             } label: {
                                 Text(option.label)
                                     .font(.caption.weight(.medium))
@@ -276,20 +293,51 @@ struct HFSearchTab: View {
                         }
                     }
                 }
+
+                // Size filter segmented bar
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 4) {
+                        ForEach(HFSizeFilter.allCases, id: \.self) { filter in
+                            Button {
+                                sizeFilter = filter
+                                service.search(query: query, sort: sort, sizeFilter: sizeFilter)
+                            } label: {
+                                Text(filter.label)
+                                    .font(.caption.weight(.medium))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .background(
+                                        sizeFilter == filter ? Color.accentColor.opacity(0.2) : Color.clear,
+                                        in: RoundedRectangle(cornerRadius: 6)
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .stroke(sizeFilter == filter ? Color.accentColor.opacity(0.5) : Color.clear, lineWidth: 1)
+                                    )
+                                    .foregroundStyle(sizeFilter == filter ? Color.accentColor : .secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(3)
+                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                }
             }
             .padding(.horizontal)
             .padding(.bottom, 8)
-
+            
             Divider()
 
             // ── Results ────────────────────────────────────────────────────
             if service.isSearching && service.results.isEmpty {
-                Spacer()
-                ProgressView("Searching HuggingFace…")
-                    .foregroundStyle(.secondary)
-                Spacer()
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text("Searching HuggingFace…")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let err = service.errorMessage {
-                Spacer()
                 VStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle")
                         .font(.largeTitle)
@@ -300,9 +348,8 @@ struct HFSearchTab: View {
                         .multilineTextAlignment(.center)
                 }
                 .padding()
-                Spacer()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if service.results.isEmpty && !query.isEmpty {
-                Spacer()
                 VStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
                         .font(.largeTitle)
@@ -311,24 +358,23 @@ struct HFSearchTab: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
-                Spacer()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List {
-                    ForEach(service.results) { model in
-                        HFModelRow(model: model, onSelect: onSelect)
-                    }
-                    if service.hasMore {
-                        HStack {
-                            Spacer()
+                ScrollView {
+                    LazyVStack(spacing: 16) {
+                        ForEach(service.results) { model in
+                            HFModelRow(model: model, onSelect: onSelect)
+                            Divider()
+                        }
+                        if service.hasMore {
                             Button("Load More") { service.loadMore() }
                                 .buttonStyle(.borderedProminent)
                                 .controlSize(.small)
-                            Spacer()
+                                .padding(.top, 4)
                         }
-                        .listRowSeparator(.hidden)
                     }
+                    .padding()
                 }
-                .listStyle(.inset)
                 .overlay(alignment: .bottom) {
                     if service.isSearching {
                         HStack(spacing: 6) {
@@ -343,11 +389,11 @@ struct HFSearchTab: View {
             }
         }
         .onChange(of: query) { _, newValue in
-            service.search(query: newValue, sort: sort)
+            service.search(query: newValue, sort: sort, sizeFilter: sizeFilter)
         }
         .onAppear {
             if service.results.isEmpty {
-                service.search(query: "", sort: sort)
+                service.search(query: "", sort: sort, sizeFilter: sizeFilter)
             }
         }
     }
@@ -358,10 +404,26 @@ struct HFSearchTab: View {
 private struct HFModelRow: View {
     let model: HFModelResult
     let onSelect: (String) -> Void
+    
+    @EnvironmentObject private var engine: InferenceEngine
+    @State private var pendingLoad = false
+    
+    private var downloadManager: ModelDownloadManager { engine.downloadManager }
+    private var isDownloaded: Bool { downloadManager.isDownloaded(model.id) }
+    private var activeProgress: ModelDownloadProgress? { downloadManager.activeDownloads[model.id] }
 
     var body: some View {
         Button {
-            onSelect(model.id)
+            if isDownloaded {
+                onSelect(model.id)
+            } else if activeProgress == nil && !pendingLoad {
+                pendingLoad = true
+                Task {
+                    _ = await downloadManager.startDownload(modelId: model.id).result
+                    // Fallback reset if the download abruptly errors out offline without completing
+                    if !isDownloaded { pendingLoad = false }
+                }
+            }
         } label: {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -380,11 +442,27 @@ private struct HFModelRow: View {
                         if model.isMlxCommunity {
                             badge("mlx-community", color: .blue)
                         }
+                        badge(model.formatDisplay, color: model.formatDisplay == "GGUF" ? .indigo : .mint)
                         if model.isMoE {
                             badge("MoE", color: .purple)
                         }
                         if let size = model.paramSizeHint {
                             badge(size, color: .orange)
+                        }
+                        if let storage = model.storageDisplay {
+                            badge(storage, color: .gray)
+                        }
+                    }
+                    
+                    if let progress = activeProgress {
+                        ProgressView(value: progress.fractionCompleted)
+                            .tint(.blue)
+                            .padding(.vertical, 2)
+                        
+                        if let speed = progress.speedMBps {
+                            Text(String(format: "%.1f MB/s", speed))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -402,15 +480,34 @@ private struct HFModelRow: View {
                             .font(.caption2.monospacedDigit())
                             .foregroundStyle(.pink)
                     }
-                    Image(systemName: "arrow.down.circle")
-                        .font(.title3)
-                        .foregroundStyle(.blue)
+                    
+                    if isDownloaded {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(.green)
+                            .padding(.top, 2)
+                    } else if activeProgress != nil || pendingLoad {
+                        ProgressView()
+                            .controlSize(.small)
+                            .padding(.top, 2)
+                    } else {
+                        Image(systemName: "arrow.down.circle")
+                            .font(.title3)
+                            .foregroundStyle(.blue)
+                            .padding(.top, 2)
+                    }
                 }
             }
             .padding(.vertical, 4)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onChange(of: isDownloaded) { _, newValue in
+            if newValue && pendingLoad {
+                pendingLoad = false
+                onSelect(model.id)
+            }
+        }
     }
 
     private func badge(_ label: String, color: Color) -> some View {
@@ -423,7 +520,7 @@ private struct HFModelRow: View {
     }
 }
 
-// MARK: — ModelRow (reused by catalog tab — unchanged logic, cleaner layout)
+// MARK: — ModelCard (reused by catalog tab)
 
 enum DownloadStatus {
     case downloaded(sizeString: String)
@@ -431,7 +528,7 @@ enum DownloadStatus {
     case downloading(progress: Double)
 }
 
-struct ModelRow: View {
+struct ModelCard: View {
     let model: ModelEntry
     let downloadStatus: DownloadStatus
     let fitStatus: ModelCatalog.FitStatus
@@ -441,114 +538,170 @@ struct ModelRow: View {
 
     var body: some View {
         Button(action: onTap) {
-            HStack(spacing: 12) {
-                // ── Left: name + metadata ─────────────────────────────────
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text(model.displayName)
-                            .font(.system(.subheadline, design: .default, weight: .semibold))
-                            .foregroundStyle(.primary)
-                        if let badge = model.badge {
-                            Text(badge)
-                                .font(.system(size: 9, weight: .bold))
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(.blue.opacity(0.12), in: Capsule())
-                                .foregroundStyle(.blue)
-                        }
-                    }
-
-                    HStack(spacing: 6) {
-                        Text(model.parameterSize)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text("•")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                        Text(model.quantization)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        if model.isMoE {
-                            Text("MoE")
-                                .font(.system(size: 9, weight: .bold))
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(.purple.opacity(0.12), in: Capsule())
-                                .foregroundStyle(.purple)
-                        }
-                    }
-
-                    // Download progress bar
-                    if let progress = downloadProgress {
-                        ProgressView(value: progress.fractionCompleted)
-                            .tint(.blue)
-                        if let speed = progress.speedMBps {
-                            Text(String(format: "%.1f MB/s", speed))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top) {
+                    Text(model.displayName)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    Spacer()
+                    if let badge = model.badge {
+                        Text(badge)
+                            .font(.system(size: 9, weight: .bold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(.blue.opacity(0.12), in: Capsule())
+                            .foregroundStyle(.blue)
                     }
                 }
 
-                Spacer()
+                HStack(spacing: 6) {
+                    Text(model.parameterSize)
+                    Text("•")
+                    Text(model.quantization)
+                    if model.isMoE {
+                        Text("MoE")
+                            .font(.system(size: 9, weight: .bold))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(.purple.opacity(0.12), in: Capsule())
+                            .foregroundStyle(.purple)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
-                // ── Right: status indicator ───────────────────────────────
-                VStack(alignment: .trailing, spacing: 3) {
-                    statusBadge
-                    Text(String(format: "%.0f GB", model.ramRequiredGB))
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                if let progress = downloadProgress {
+                    ProgressView(value: progress.fractionCompleted)
+                        .tint(.blue)
+                    if let speed = progress.speedMBps {
+                        Text(String(format: "%.1f MB/s", speed))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Spacer(minLength: 4)
+
+                HStack {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(statusColor)
+                            .frame(width: 8, height: 8)
+                        Text(statusText)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    actionIcon
                 }
             }
-            .padding(.vertical, 4)
-            .contentShape(Rectangle())
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color.secondary.opacity(0.1), lineWidth: 1)
+            )
         }
         .buttonStyle(.plain)
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            if let onDelete {
-                Button(role: .destructive, action: onDelete) {
-                    Label("Delete", systemImage: "trash")
+        .contextMenu {
+            if case .downloaded = downloadStatus, let deleteAction = onDelete {
+                Button(role: .destructive, action: deleteAction) {
+                    Label("Delete Model", systemImage: "trash")
                 }
             }
         }
     }
 
+    private var statusText: String {
+        switch fitStatus {
+        case .fits: return "Fits comfortably"
+        case .tight: return "Tight (slow)"
+        case .requiresFlash: return "Flash Streaming"
+        case .tooLarge: return "Too large"
+        }
+    }
+
+    private var statusColor: Color {
+        switch fitStatus {
+        case .fits: return .green
+        case .tight: return .yellow
+        case .requiresFlash: return .orange
+        case .tooLarge: return .red
+        }
+    }
+
     @ViewBuilder
-    private var statusBadge: some View {
+    private var actionIcon: some View {
         switch downloadStatus {
-        case .downloaded:
-            Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-                .font(.title3)
-        case .available:
-            switch fitStatus {
-            case .fits:
-                Image(systemName: "arrow.down.circle")
-                    .foregroundStyle(.blue)
-                    .font(.title3)
-            case .tight:
-                Image(systemName: "arrow.down.circle")
-                    .foregroundStyle(.orange)
-                    .font(.title3)
-            case .requiresFlash:
-                Image(systemName: "externaldrive.badge.wifi")
-                    .foregroundStyle(.indigo)
-                    .font(.title3)
-            case .tooLarge:
-                Image(systemName: "xmark.circle")
-                    .foregroundStyle(.red)
-                    .font(.title3)
+        case .downloaded(let size):
+            HStack(spacing: 4) {
+                if !size.isEmpty {
+                    Text(size).font(.caption2).foregroundColor(.secondary)
+                }
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundColor(.green)
             }
-        case .downloading(let p):
+        case .downloading(_):
+            EmptyView()
+        case .available:
+            Image(systemName: "arrow.down.circle")
+                .foregroundColor(.blue)
+        }
+    }
+}
+
+// MARK: — Floating Download Banner
+
+struct FloatingDownloadBanner: View {
+    let modelId: String
+    let progress: ModelDownloadProgress
+
+    var body: some View {
+        HStack(spacing: 12) {
             ZStack {
                 Circle()
-                    .stroke(Color.secondary.opacity(0.2), lineWidth: 2)
+                    .stroke(SwiftBuddyTheme.accent.opacity(0.2), lineWidth: 3)
                 Circle()
-                    .trim(from: 0, to: p)
-                    .stroke(Color.blue, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .trim(from: 0, to: progress.fractionCompleted)
+                    .stroke(
+                        SwiftBuddyTheme.avatarGradient,
+                        style: StrokeStyle(lineWidth: 3, lineCap: .round)
+                    )
                     .rotationEffect(.degrees(-90))
+                    .animation(.linear(duration: 0.3), value: progress.fractionCompleted)
             }
-            .frame(width: 22, height: 22)
+            .frame(width: 30, height: 30)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Downloading \(modelId.split(separator: "/").last ?? "")")
+                    .font(.system(.subheadline, design: .default, weight: .bold))
+                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                    .lineLimit(1)
+
+                HStack {
+                    Text("\(Int(progress.fractionCompleted * 100))%")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(SwiftBuddyTheme.textSecondary)
+
+                    if let speed = progress.speedMBps {
+                        Text("• \(String(format: "%.1f MB/s", speed))")
+                            .font(.caption)
+                            .foregroundStyle(SwiftBuddyTheme.textTertiary)
+                    }
+                }
+            }
+            Spacer()
         }
+        .padding(12)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(SwiftBuddyTheme.accent.opacity(0.3), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.15), radius: 10, y: 5)
+        .padding(.horizontal)
     }
 }

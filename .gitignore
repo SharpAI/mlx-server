@@ -24,3 +24,5 @@ tmp/
 /homesec-benchmark/
 /SwiftBuddy/build/
 /swiftbuddy-registry/
+3rd_party/
+.agents/harness/audio-omni-gemma4/runs/

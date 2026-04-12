@@ -51,7 +51,10 @@ struct ModelManagementView: View {
             } message: {
                 Text("This will free \(formatBytes(dm.totalDiskUsageBytes)) of storage and cannot be undone.")
             }
-            .alert("Deletion Error", isPresented: .constant(deletionError != nil), actions: {
+            .alert("Deletion Error", isPresented: Binding(
+                get: { deletionError != nil },
+                set: { if !$0 { deletionError = nil } }
+            ), actions: {
                 Button("OK") { deletionError = nil }
             }, message: {
                 Text(deletionError ?? "")
@@ -68,6 +71,7 @@ struct ModelManagementView: View {
                         // We must duplicate this manually wrapped view component from ModelPickerView
                         HFSearchTab(onSelect: { id in
                             showHFSearch = false
+                            dismiss()
                             Task { await engine.load(modelId: id) }
                         })
                     }
@@ -196,49 +200,58 @@ struct ModelManagementView: View {
             return false
         }()
 
-        return HStack(spacing: 12) {
-            // Icon
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(colorForModel(downloaded.id))
-                    .frame(width: 36, height: 36)
-                Image(systemName: entry?.isMoE == true ? "square.grid.3x3.fill" : "brain")
-                    .font(.callout)
-                    .foregroundStyle(.white)
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                HStack {
-                    Text(entry?.displayName ?? downloaded.id.components(separatedBy: "/").last ?? downloaded.id)
-                        .font(.headline)
-                    if isLoaded {
-                        Text("IN USE")
-                            .font(.caption2.weight(.bold))
-                            .padding(.horizontal, 5).padding(.vertical, 2)
-                            .background(Color.green.opacity(0.15))
-                            .foregroundStyle(.green)
-                            .clipShape(Capsule())
-                    }
+        return Button {
+            dismiss()
+            Task { await engine.load(modelId: downloaded.id) }
+        } label: {
+            HStack(spacing: 12) {
+                // Icon
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(colorForModel(downloaded.id))
+                        .frame(width: 36, height: 36)
+                    Image(systemName: entry?.isMoE == true ? "square.grid.3x3.fill" : "brain")
+                        .font(.callout)
+                        .foregroundStyle(.white)
                 }
-                HStack(spacing: 4) {
-                    Text(downloaded.displaySize)
-                        .font(.caption).foregroundStyle(.secondary)
-                    if let date = downloaded.modifiedDate {
-                        Text("·")
-                            .foregroundStyle(.secondary)
-                        Text(date, style: .relative)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Text(entry?.displayName ?? downloaded.id.components(separatedBy: "/").last ?? downloaded.id)
+                            .font(.headline)
+                            .foregroundStyle(.primary)
+                        if isLoaded {
+                            Text("IN USE")
+                                .font(.caption2.weight(.bold))
+                                .padding(.horizontal, 5).padding(.vertical, 2)
+                                .background(Color.green.opacity(0.15))
+                                .foregroundStyle(.green)
+                                .clipShape(Capsule())
+                        }
+                    }
+                    HStack(spacing: 4) {
+                        Text(downloaded.displaySize)
                             .font(.caption).foregroundStyle(.secondary)
+                        if let date = downloaded.modifiedDate {
+                            Text("·")
+                                .foregroundStyle(.secondary)
+                            Text(date, style: .relative)
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                 }
+
+                Spacer()
+
+                // Size indicator
+                Text(downloaded.displaySize)
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
             }
-
-            Spacer()
-
-            // Size indicator
-            Text(downloaded.displaySize)
-                .font(.callout.monospacedDigit())
-                .foregroundStyle(.secondary)
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(role: .destructive) {
                 deleteModel(downloaded.id)
@@ -296,23 +309,29 @@ struct ModelManagementView: View {
 
     private func deleteModel(_ modelId: String) {
         do {
-            try dm.delete(modelId)
-            // If we deleted the currently loaded model, unload it
+            // Unload the currently loaded model BEFORE attempting filesystem deletion
+            // This releases MLX mmap file locks, preventing macOS from throwing Access/IO errors.
             if case .ready(let id) = engine.state, id == modelId {
                 engine.unload()
+                // Yield the main thread to ensure deallocation completes
+                RunLoop.main.run(until: Date().addingTimeInterval(0.2))
             }
+            try dm.delete(modelId)
         } catch {
             deletionError = error.localizedDescription
         }
     }
 
     private func deleteAllModels() {
+        // Unload first to free mmap file locks
+        if case .ready = engine.state {
+            engine.unload()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        }
+        
         let ids = dm.downloadedModels.map { $0.id }
         for id in ids {
             try? dm.delete(id)
-        }
-        if case .ready = engine.state {
-            engine.unload()
         }
     }
 

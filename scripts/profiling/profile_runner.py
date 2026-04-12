@@ -100,6 +100,7 @@ def poll_health(server_proc, port=5422, timeout=30, model_id="", model_size_gb=0
             
             dt_total = now - start_dl_time
             if dt_total >= 1.0:
+                # Calculate true average speed to smooth out APFS chunk jumps
                 active_downloaded = current_bytes - initial_bytes
                 if active_downloaded > 0:
                     last_speed = active_downloaded / dt_total / (1024**2)
@@ -321,8 +322,8 @@ def main():
         static_mem = extract_base_memory(log_path)
         
         for ctx_size in context_sizes:
-            print(f"\n>> Running {ctx_size}-token context test (max generation ~2)...")
-            ok, ttft, tps = make_request_stream(prompt_len=ctx_size, max_tokens=2)
+            print(f"\n>> Running {ctx_size}-token context test (max generation 60)...")
+            ok, ttft, tps = make_request_stream(prompt_len=ctx_size, max_tokens=60)
             
             # Wait for server to flush post-generation logs
             time.sleep(1)
@@ -347,9 +348,10 @@ def main():
             else:
                 print(f"  FAILED / OOM")
                 
-        server_proc.send_signal(signal.SIGTERM)
+        server_proc.send_signal(signal.SIGKILL)
         server_proc.wait(timeout=20)
-        time.sleep(3)  # Let OS reclaim memory before next config
+        print("  [Teardown] Waiting 12 seconds for macOS to garbage collect the UMA heap...")
+        time.sleep(12)  # Let macOS Metal driver fully garbage collect the previous 48GB heap before next config
         
     # ── Write markdown report ──
     with open(args.out, "w") as f:

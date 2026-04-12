@@ -14,7 +14,7 @@ public struct GenerationConfig: Sendable {
         maxTokens: Int = 2048,
         temperature: Float = 0.6,
         topP: Float = 1.0,
-        repetitionPenalty: Float = 1.0,
+        repetitionPenalty: Float = 1.05,
         seed: UInt64? = nil,
         enableThinking: Bool = false
     ) {

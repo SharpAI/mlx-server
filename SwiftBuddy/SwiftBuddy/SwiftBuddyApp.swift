@@ -38,9 +38,19 @@ struct SwiftBuddyApp: App {
     var body: some Scene {
         WindowGroup {
             MainContentView(engine: engine, appearance: appearance, server: server)
-                .modelContainer(for: [PalaceWing.self, PalaceRoom.self, MemoryEntry.self])
+                .modelContainer(for: [PalaceWing.self, PalaceRoom.self, MemoryEntry.self, KnowledgeGraphTriple.self, ChatSession.self, ChatTurn.self])
         }
         #if os(macOS)
+        
+        Window("Telemetry Dashboard", id: "telemetry-dashboard") {
+            ResourceDashboardView()
+                .padding()
+                .frame(minWidth: 350, minHeight: 400)
+                .background(SwiftBuddyTheme.background)
+        }
+        .windowResizability(.contentSize)
+        .windowStyle(.hiddenTitleBar)
+        
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandMenu("Model") {
@@ -51,6 +61,11 @@ struct SwiftBuddyApp: App {
                     engine.unload()
                 }
             }
+            CommandMenu("Tools") {
+                Button("Telemetry Dashboard") {
+                    NotificationCenter.default.post(name: .showTelemetryDashboard, object: nil)
+                }.keyboardShortcut("t", modifiers: [.command, .shift])
+            }
         }
         #endif
     }
@@ -58,11 +73,16 @@ struct SwiftBuddyApp: App {
 
 extension Notification.Name {
     static let showModelPicker = Notification.Name("showModelPicker")
+    static let showTextIngestion = Notification.Name("showTextIngestion")
+    static let showPersonaDiscovery = Notification.Name("showPersonaDiscovery")
+    static let showModelManagement = Notification.Name("showModelManagement")
+    static let showTelemetryDashboard = Notification.Name("showTelemetryDashboard")
 }
 
 // Intermediary view to safely access SwiftData environment
 struct MainContentView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.openWindow) private var openWindow
     
     @ObservedObject var engine: InferenceEngine
     @ObservedObject var appearance: AppearanceStore
@@ -78,11 +98,27 @@ struct MainContentView: View {
             .tint(SwiftBuddyTheme.accent)
             .onAppear {
                 MemoryPalaceService.shared.modelContext = modelContext
+                GraphPalaceService.shared.modelContext = modelContext
                 server.start(engine: engine)
                 
                 // Pre-load the JSON personas so the UI Wings instantly populate!
                 PersonaLoader.loadDevDefaults()
+                
+                // Automatically resume the last selected model via UserDefaults
+                if let lastModel = engine.downloadManager.lastLoadedModelId {
+                    Task {
+                        // Prevent loading if we're already loading or ready
+                        if case .idle = engine.state {
+                            await engine.load(modelId: lastModel)
+                        }
+                    }
+                }
             }
+            #if os(macOS)
+            .onReceive(NotificationCenter.default.publisher(for: .showTelemetryDashboard)) { _ in
+                openWindow(id: "telemetry-dashboard")
+            }
+            #endif
     }
 }
 

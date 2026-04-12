@@ -24,11 +24,86 @@ struct SettingsView: View {
             SwiftBuddyTheme.background.ignoresSafeArea()
 
             Form {
+                // ── System Engine ─────────────────────────────────────────────
+                Section {
+                    Button {
+                        NotificationCenter.default.post(name: .showModelPicker, object: nil)
+                        dismiss()
+                    } label: {
+                        HStack {
+                            Label("Model Configuration", systemImage: "cpu.fill")
+                                .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .foregroundStyle(SwiftBuddyTheme.textSecondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        NotificationCenter.default.post(name: .showTextIngestion, object: nil)
+                        dismiss()
+                    } label: {
+                        HStack {
+                            Label("Text Ingestion Miner", systemImage: "hammer.fill")
+                                .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .foregroundStyle(SwiftBuddyTheme.textSecondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        NotificationCenter.default.post(name: .showModelManagement, object: nil)
+                        dismiss()
+                    } label: {
+                        HStack {
+                            Label("Manage Downloaded Models", systemImage: "externaldrive.badge.minus")
+                                .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .foregroundStyle(SwiftBuddyTheme.textSecondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        NotificationCenter.default.post(name: .showPersonaDiscovery, object: nil)
+                        dismiss()
+                    } label: {
+                        HStack {
+                            Label("Discover Personas", systemImage: "person.crop.circle.badge.plus")
+                                .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .foregroundStyle(SwiftBuddyTheme.textSecondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    
+                    HStack(spacing: 6) {
+                        Label("API Server", systemImage: "network")
+                            .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                        Spacer()
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 8, height: 8)
+                        Text("Port 8080")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    }
+                    .padding(.vertical, 4)
+                } header: {
+                    sectionLabel("System Engine", icon: "server.rack")
+                }
+
                 // ── Generation ────────────────────────────────────────────────
                 Section {
                     temperatureRow
                     maxTokensRow
                     topPRow
+                    repetitionPenaltyRow
                 } header: {
                     sectionLabel("Generation", icon: "slider.horizontal.3")
                 }
@@ -109,6 +184,9 @@ struct SettingsView: View {
                     sectionLabel("About", icon: "info.circle")
                 }
             }
+            #if os(macOS)
+            .formStyle(.grouped)
+            #endif
             .scrollContentBackground(.hidden)
         }
         .navigationTitle("Settings")
@@ -191,6 +269,29 @@ struct SettingsView: View {
                 set: { viewModel.config.topP = Float($0) }
             ), in: 0...1, step: 0.05)
             .tint(SwiftBuddyTheme.accentSecondary)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var repetitionPenaltyRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Label("Repetition Penalty", systemImage: "repeat.circle")
+                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                Spacer()
+                Text(String(format: "%.2f", viewModel.config.repetitionPenalty))
+                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
+                    .monospacedDigit()
+                    .font(.callout)
+            }
+            Slider(value: Binding(
+                get: { Double(viewModel.config.repetitionPenalty) },
+                set: { viewModel.config.repetitionPenalty = Float($0) }
+            ), in: 1.0...2.0, step: 0.01)
+            .tint(SwiftBuddyTheme.success)
+            Text("Higher = less repeating, 1.0 = disabled (can cause echoing)")
+                .font(.caption2)
+                .foregroundStyle(SwiftBuddyTheme.textTertiary)
         }
         .padding(.vertical, 2)
     }

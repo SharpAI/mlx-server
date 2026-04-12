@@ -13,7 +13,9 @@ final class WebToolService: NSObject, ObservableObject, WKNavigationDelegate {
     override init() {
         super.init()
         let config = WKWebViewConfiguration()
-        config.preferences.javaScriptEnabled = true
+        let prefs = WKWebpagePreferences()
+        prefs.allowsContentJavaScript = true
+        config.defaultWebpagePreferences = prefs
         hiddenWebView = WKWebView(frame: .zero, configuration: config)
         hiddenWebView.navigationDelegate = self
     }
@@ -57,7 +59,7 @@ final class WebToolService: NSObject, ObservableObject, WKNavigationDelegate {
         // Remove unwanted elements
         try doc.select("script, style, nav, footer, header, noscript, iframe, .ad, .advertisement").remove()
         
-        let body = try doc.body()
+        let body = doc.body()
         return try body?.text() ?? ""
     }
     
@@ -77,16 +79,17 @@ final class WebToolService: NSObject, ObservableObject, WKNavigationDelegate {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             
             let js = "document.body.innerText"
-            webView.evaluateJavaScript(js) { result, error in
-                if let err = error {
-                    self.webViewContinuation?.resume(throwing: err)
-                } else if let text = result as? String {
+            do {
+                let result = try await webView.evaluateJavaScript(js)
+                if let text = result as? String {
                     self.webViewContinuation?.resume(returning: text)
                 } else {
                     self.webViewContinuation?.resume(returning: "")
                 }
-                self.webViewContinuation = nil
+            } catch {
+                self.webViewContinuation?.resume(throwing: error)
             }
+            self.webViewContinuation = nil
         }
     }
     
