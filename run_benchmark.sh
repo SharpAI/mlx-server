@@ -4,6 +4,7 @@
 cd "$(dirname "$0")"
 
 echo "=============================================="
+export METAL_LIBRARY_PATH="$(pwd)/.build/arm64-apple-macosx/release"
 echo "    Aegis-AI MLX Profiling Benchmark Suite    "
 echo "=============================================="
 echo ""
@@ -201,6 +202,11 @@ if [ "$suite_opt" == "2" ]; then
     
     echo "Waiting for server to be ready on port 5431 (this may take a minute if downloading)..."
     for i in {1..300}; do
+        if ! kill -0 $SERVER_PID 2>/dev/null; then
+            echo "❌ ERROR: Server process died unexpectedly! Printing logs:"
+            cat ./tmp/*_server.log || echo "No log found"
+            exit 1
+        fi
         if curl -s http://127.0.0.1:5431/health > /dev/null; then break; fi
         sleep 1
     done
@@ -238,6 +244,11 @@ if [ "$suite_opt" == "3" ]; then
     
     echo "Waiting for server to be ready on port 5431 (this may take a minute if downloading)..."
     for i in {1..300}; do
+        if ! kill -0 $SERVER_PID 2>/dev/null; then
+            echo "❌ ERROR: Server process died unexpectedly! Printing logs:"
+            cat ./tmp/*_server.log || echo "No log found"
+            exit 1
+        fi
         if curl -s http://127.0.0.1:5431/health > /dev/null; then break; fi
         sleep 1
     done
@@ -317,6 +328,11 @@ EOF
     
     echo "Waiting for server to be ready on port 5431 (this may take a minute if downloading)..."
     for i in {1..300}; do
+        if ! kill -0 $SERVER_PID 2>/dev/null; then
+            echo "❌ ERROR: Server process died unexpectedly! Printing logs:"
+            cat ./tmp/*_server.log || echo "No log found"
+            exit 1
+        fi
         if curl -s http://127.0.0.1:5431/health > /dev/null; then break; fi
         sleep 1
     done
@@ -422,6 +438,11 @@ EOF
     
     echo "Waiting for server to be ready on port 5431 (this may take a minute if downloading)..."
     for i in {1..300}; do
+        if ! kill -0 $SERVER_PID 2>/dev/null; then
+            echo "❌ ERROR: Server process died unexpectedly! Printing logs:"
+            cat ./tmp/*_server.log || echo "No log found"
+            exit 1
+        fi
         if curl -s http://127.0.0.1:5431/health > /dev/null; then break; fi
         sleep 1
     done
@@ -505,9 +526,7 @@ if [ "$suite_opt" == "6" ]; then
     say "Warning! A dog has been detected on the security camera footage!" -o "${AUDIO_PATH}.aiff"
     afconvert -f WAVE -d LEI16 "${AUDIO_PATH}.aiff" "${AUDIO_PATH}.wav"
     
-    echo "Converting MP3 to WAV for engine pipeline ingestion..."
-    # afconvert converts mp3 to standardized WAV under macOS natively without ffmpeg dependencies
-    afconvert -f WAVE -d LEI16 "${AUDIO_PATH}.mp3" "${AUDIO_PATH}.wav" 
+
     
     if [ ! -f "$IMAGE_PATH" ] || [ ! -f "${AUDIO_PATH}.wav" ]; then
         echo "Failed to download media assets."
@@ -538,11 +557,16 @@ EOF
 
     echo "Starting Server in background with --vision AND --audio (Omni)..."
     killall SwiftLM 2>/dev/null
-    $BIN --model "$FULL_MODEL" --vision --audio --port 5431 > ./tmp/omni_server.log 2>&1 &
+    $BIN --model "$FULL_MODEL" --vision --audio --port 5431 2>&1 | tee ./tmp/omni_server.log &
     SERVER_PID=$!
     
     echo "Waiting for server to be ready on port 5431 (this may take a minute if downloading)..."
     for i in {1..300}; do
+        if ! kill -0 $SERVER_PID 2>/dev/null; then
+            echo "❌ ERROR: Server process died unexpectedly! Printing logs:"
+            cat ./tmp/*_server.log || echo "No log found"
+            exit 1
+        fi
         if curl -s http://127.0.0.1:5431/health > /dev/null; then break; fi
         sleep 1
     done

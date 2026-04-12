@@ -19,7 +19,7 @@ echo "=========================================="
 echo "Initiating build..."
 
 cd "$WORKSPACE_DIR"
-swift build -c release > "$LOG_FILE" 2>&1
+swift build -c release 2>&1 | tee "$LOG_FILE"
 
 if [ $? -ne 0 ]; then
     echo "❌ [FAILED] Harness Compilation Terminated. See $LOG_FILE"
@@ -47,7 +47,7 @@ EOF
 echo "Running Integration Pipeline against Omni Mock Generator..."
 
 # Trigger the Omni Evaluation Test (Test 6) and select the 4bit Gemma model (Option 2) automatically
-echo -e "6\n2\n" | HEADLESS=1 ./run_benchmark.sh >> "$LOG_FILE" 2>&1
+echo -e "6\n2\n" | HEADLESS=1 ./run_benchmark.sh 2>&1 | tee -a "$LOG_FILE"
 
 if [ $? -ne 0 ]; then
     echo "❌ [FAILED] Benchmark Test completely failed or crashed. See $LOG_FILE"
