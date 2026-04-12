@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -eo pipefail
 
 echo "=============================================="
 echo "    SwiftLM Build Script                      "
@@ -47,10 +47,14 @@ cmake "../../$MLX_SRC" \
     -DMLX_METAL_JIT=OFF \
     -DMLX_ENABLE_NAX=1 \
     -DCMAKE_BUILD_TYPE=Release \
-    2>&1 | tail -5
+    2>&1 | tail -40
 
 echo "   Compiling Metal shaders..."
-make mlx-metallib -j$(sysctl -n hw.ncpu) 2>&1 | tail -3
+if ! make mlx-metallib -j$(sysctl -n hw.ncpu) 2>&1 | tail -80; then
+    echo "❌ Failed to build mlx.metallib. If you see 'missing Metal Toolchain', run:"
+    echo "   xcodebuild -downloadComponent MetalToolchain"
+    exit 1
+fi
 
 popd > /dev/null
 
