@@ -154,6 +154,7 @@ jobs:
       - name: Run speculative decoding E2E
         env:
           HF_HUB_DOWNLOAD_TIMEOUT: "900"
+          SWIFTLM_TOP_K: "4"
         run: |
           chmod +x tests/test-speculative.sh
           for attempt in 1 2 3; do
@@ -219,6 +220,7 @@ jobs:
       - name: Run speculative evaluation E2E
         env:
           HF_HUB_DOWNLOAD_TIMEOUT: "900"
+          SWIFTLM_TOP_K: "4"
         run: |
           chmod +x tests/test-speculative-eval.sh
           for attempt in 1 2 3; do
