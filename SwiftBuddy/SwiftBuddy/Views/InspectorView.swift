@@ -9,15 +9,15 @@ struct InspectorView: View {
     @Binding var showModelPicker: Bool
     
     @Query(sort: \PalaceWing.name) var wings: [PalaceWing]
+    @StateObject private var extractionService = ExtractionService.shared
+    
+    @State private var textToMine: String = ""
+    @State private var targetWing: String = "Einstein"
     @StateObject private var registryService = RegistryService.shared
     
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                
-                // MARK: - Telemetry Dashboard
-                ResourceDashboardView()
-                    .padding(.bottom, 10)
                 
                 // MARK: - API Server Status
                 Section {
@@ -118,7 +118,82 @@ struct InspectorView: View {
                     Text("TOOLS").font(.caption).foregroundColor(.secondary)
                 }
                 
-
+                // MARK: - Memory Palace
+                Section {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label("Memory Palace", systemImage: "brain.head.profile")
+                            .font(.headline)
+                        
+                        if wings.isEmpty {
+                            Text("No memories stored yet.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(wings) { wing in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Wing: \(wing.name)")
+                                        .font(.subheadline).bold()
+                                    
+                                    ForEach(wing.rooms) { room in
+                                        HStack {
+                                            Text(room.name)
+                                                .font(.caption)
+                                            Spacer()
+                                            Text("\(room.memories.count) facts")
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        .padding(.leading, 10)
+                                    }
+                                }
+                                .padding(.bottom, 6)
+                            }
+                        }
+                    }
+                    .padding()
+                    .background(Color(nsColor: .controlBackgroundColor))
+                    .cornerRadius(8)
+                } header: {
+                    Text("MEMORY SYSTEM").font(.caption).foregroundColor(.secondary)
+                }
+                
+                // MARK: - Memory Miner
+                Section {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label("Memory Miner", systemImage: "hammer.fill")
+                            .font(.headline)
+                        
+                        TextField("Target Wing (e.g. Einstein)", text: $targetWing)
+                            .textFieldStyle(.roundedBorder)
+                        
+                        TextEditor(text: $textToMine)
+                            .frame(height: 80)
+                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+                        
+                        Button(action: {
+                            Task {
+                                await extractionService.mine(textBlock: textToMine, wing: targetWing, engine: engine)
+                                textToMine = ""
+                            }
+                        }) {
+                            Text(extractionService.isMining ? "Mining..." : "Extract to Palace")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(extractionService.isMining || textToMine.isEmpty)
+                        
+                        if !extractionService.lastLog.isEmpty {
+                            Text(extractionService.lastLog)
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding()
+                    .background(Color(nsColor: .controlBackgroundColor))
+                    .cornerRadius(8)
+                } header: {
+                    Text("TEXT INGESTION").font(.caption).foregroundColor(.secondary)
+                }
                 
                 // MARK: - Cloud Persona Registry
                 Section {
@@ -147,7 +222,7 @@ struct InspectorView: View {
                                         .font(.subheadline)
                                     Spacer()
                                     Button("Install") {
-                                        Task { await registryService.downloadPersona(name: personaName, using: engine) }
+                                        Task { await registryService.downloadPersona(name: personaName) }
                                     }
                                     .buttonStyle(.borderedProminent)
                                     .controlSize(.mini)
@@ -166,7 +241,6 @@ struct InspectorView: View {
                     .padding()
                     .background(Color(nsColor: .controlBackgroundColor))
                     .cornerRadius(8)
-                    .fixedSize(horizontal: false, vertical: true)
                 } header: {
                     Text("DISCOVER PERSONAS").font(.caption).foregroundColor(.secondary)
                 }

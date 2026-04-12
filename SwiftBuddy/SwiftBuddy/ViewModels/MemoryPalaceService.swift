@@ -2,10 +2,6 @@ import Foundation
 import SwiftData
 import NaturalLanguage
 
-#if canImport(MLXInferenceCore)
-import MLXInferenceCore
-#endif
-
 @MainActor
 final class MemoryPalaceService {
     static let shared = MemoryPalaceService()
@@ -84,122 +80,6 @@ final class MemoryPalaceService {
         return true
     }
     
-    @discardableResult
-    func saveMemories(wingName: String, roomName: String, texts: [String], type: String = "Facts", onProgress: ((Int, Int, String) -> Void)? = nil) async throws -> Int {
-        guard let context = modelContext else { throw URLError(.badServerResponse) }
-        guard !texts.isEmpty else { return 0 }
-        
-        let fetchWing = FetchDescriptor<PalaceWing>(predicate: #Predicate { $0.name == wingName })
-        let wing = (try? context.fetch(fetchWing).first) ?? {
-            let w = PalaceWing(name: wingName)
-            context.insert(w)
-            return w
-        }()
-        
-        let fetchRoom = FetchDescriptor<PalaceRoom>(predicate: #Predicate { $0.name == roomName && $0.wing?.name == wingName })
-        let room = (try? context.fetch(fetchRoom).first) ?? {
-            let r = PalaceRoom(name: roomName, wing: wing)
-            context.insert(r)
-            return r
-        }()
-        
-        let fetchDesc = FetchDescriptor<MemoryEntry>()
-        let existingMemories = (try? context.fetch(fetchDesc).filter { $0.room?.name == roomName && $0.room?.wing?.name == wingName }) ?? []
-        var existingVectors = existingMemories.compactMap { $0.embedding }
-        
-        var savedCount = 0
-        
-        // Batch embedding extraction and insertion
-        for (index, text) in texts.enumerated() {
-            onProgress?(index + 1, texts.count, text)
-            await Task.yield()
-            guard let vector = generateEmbedding(for: text) else { continue }
-            
-            var isDuplicate = false
-            for emb in existingVectors {
-                if cosineSimilarity(a: vector, b: emb) > 0.95 {
-                    isDuplicate = true
-                    break
-                }
-            }
-            if isDuplicate { continue }
-            
-            let entry = MemoryEntry(text: text, hallType: type, embedding: vector, room: room)
-            context.insert(entry)
-            existingVectors.append(vector)
-            savedCount += 1
-        }
-        
-        // Single synchronized database transaction
-        if savedCount > 0 {
-            try context.save()
-        }
-        
-        return savedCount
-    }
-    
-#if canImport(MLXInferenceCore)
-    public func synthesizePersonaIndex(wingName: String, using engine: InferenceEngine, onProgress: ((Int, Int, String) -> Void)? = nil) async throws {
-        onProgress?(1, 1, "EXTRACTING CORE IDENTITIES VIA VECTOR MATCHING...")
-        
-        // 1. Vector Search for critical identity aspects
-        let extractionCategories = [
-            ("Core Identity & Directives", "What is your core identity, main goal, or primary directive?"),
-            ("Background & Lore", "What is your origin story, historical background, and past experiences?"),
-            ("Tone & Speaking Style", "How do you speak? What is your tone of voice, cadence, and vocabulary?"),
-            ("Personality & Demeanor", "What is your personality like? Are you friendly, formal, eccentric, or stoic?"),
-            ("Preferences & Dislikes", "What are your personal preferences, likes, dislikes, and hobbies?")
-        ]
-        
-        var combinedContext = ""
-        var seenTexts = Set<String>()
-        
-        for (index, category) in extractionCategories.enumerated() {
-            onProgress?(index + 1, extractionCategories.count + 1, "EXTRACTING: \(category.0.uppercased())...")
-            
-            combinedContext += "\n[\(category.0) Results]\n"
-            let matches = try searchMemories(query: category.1, wingName: wingName, topK: 3)
-            var categoryHadMatches = false
-            
-            for match in matches {
-                if !seenTexts.contains(match.text) {
-                    seenTexts.insert(match.text)
-                    combinedContext += "- \(match.text)\n"
-                    categoryHadMatches = true
-                }
-            }
-            if !categoryHadMatches {
-                combinedContext += "(No direct matches found)\n"
-            }
-        }
-        
-        guard !combinedContext.isEmpty else {
-            print("[MemoryPalace] No memories found for persona synthesis.")
-            return
-        }
-        
-        // 2. Final Download (LLM Combine)
-        onProgress?(extractionCategories.count + 1, extractionCategories.count + 1, "SYNTHESIZING FINAL PERSONA (LLM)...")
-        let prompt = """
-        You are an analytical compiler. Consolidate the following extracted persona memories into a dense, 100-word core identity and talk-tone matrix. 
-        Do not output your reasoning or any conversational filler. Only output the final dense summary.
-        
-        [Vector-Matched Memories]
-        \(combinedContext)
-        """
-        
-        let stream = engine.generate(messages: [.user(prompt)])
-        var response = ""
-        for await token in stream {
-            response += token.text
-        }
-        
-        // 3. Save to Palace
-        try saveMemory(wingName: wingName, roomName: "persona_index", text: response.trimmingCharacters(in: .whitespacesAndNewlines), type: "hall_facts")
-        print("[MemoryPalace] 🧠 Vector-Driven Persona Index Generated & Saved.")
-    }
-#endif
-    
     func searchMemories(query: String, wingName: String, roomName: String? = nil, hallType: String? = nil, topK: Int = 5) throws -> [MemoryEntry] {
         guard let context = modelContext else { throw URLError(.badServerResponse) }
         guard let queryVector = generateEmbedding(for: query) else { return [] }
@@ -247,16 +127,6 @@ final class MemoryPalaceService {
         let fetchWing = FetchDescriptor<PalaceWing>(predicate: #Predicate { $0.name == wingName })
         guard let wing = try context.fetch(fetchWing).first else { return [] }
         return wing.rooms.map { $0.name }
-    }
-    
-    // Natively pulls raw facts avoiding embedding distance logic 
-    func fetchRoomContents(wingName: String, roomName: String) throws -> [String] {
-        guard let context = modelContext else { throw URLError(.badServerResponse) }
-        let fetchRoom = FetchDescriptor<PalaceRoom>(predicate: #Predicate { 
-            $0.name == roomName && $0.wing?.name == wingName 
-        })
-        guard let room = try context.fetch(fetchRoom).first else { return [] }
-        return room.memories.map { $0.text }
     }
     
     // MARK: - Wing Management

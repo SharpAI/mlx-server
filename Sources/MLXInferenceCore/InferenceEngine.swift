@@ -110,8 +110,6 @@ public struct GenerationToken: Sendable {
 public final class InferenceEngine: ObservableObject {
     @Published public private(set) var state: ModelState = .idle
     @Published public private(set) var thermalLevel: ThermalLevel = .nominal
-    @Published public private(set) var activeContextTokens: Int = 0
-    @Published public private(set) var maxContextWindow: Int = 0
 
     /// Whether to automatically unload the model when the app backgrounds
     /// and reload it when returning to foreground.
@@ -371,30 +369,9 @@ public final class InferenceEngine: ObservableObject {
                 self.state = .generating
 
                 do {
-                    var finalMessages: [[String: String]] = []
-                    var pendingSystemContext = ""
-                    
-                    for msg in messages {
-                        if msg.role == .system {
-                            pendingSystemContext += msg.content + "\n\n"
-                        } else {
-                            var roleRaw = msg.role.rawValue
-                            if roleRaw == "assistant" { roleRaw = "model" }
-                            var content = msg.content
-                            
-                            if roleRaw == "user" && !pendingSystemContext.isEmpty {
-                                content = "[SYSTEM CONTEXT / PERSONA DATA]\n" + pendingSystemContext + "\n[END CONTEXT]\n\n" + content
-                                pendingSystemContext = "" // Clear after injecting
-                            }
-                            finalMessages.append(["role": roleRaw, "content": content])
-                        }
-                    }
-                    
-                    let mlxMessages = finalMessages
+                    let mlxMessages = messages.map { ["role": $0.role.rawValue, "content": $0.content] }
                     var params = GenerateParameters(temperature: config.temperature)
                     params.topP = config.topP
-                    params.repetitionPenalty = config.repetitionPenalty
-                    params.repetitionContextSize = 20
 
                     var thinkingActive = false
                     var outputText = ""
@@ -402,17 +379,6 @@ public final class InferenceEngine: ObservableObject {
 
                     let userInput = UserInput(messages: mlxMessages)
                     let lmInput = try await container.prepare(input: userInput)
-                    
-                    // Approximate the input token size (as LMInput wrapper blocks direct inspection without private API)
-                    // MLX often counts 1 word roughly as 1.3 tokens. 
-                    let stringLength = mlxMessages.map { ($0["content"] as? String ?? "").count }.reduce(0, +)
-                    let baseTokens = Int(Double(stringLength) / 3.5)
-                    self.activeContextTokens = baseTokens
-                    
-                    // If we have a max length config, expose it
-                    // TODO: Safely extract from ModelConfiguration when MLX exposes it dynamically
-                    self.maxContextWindow = 8192
-                    
                     let stream: AsyncStream<Generation> = try await container.generate(
                         input: lmInput,
                         parameters: params
@@ -424,22 +390,8 @@ public final class InferenceEngine: ObservableObject {
                         if case .chunk(let text, tokenId: _) = generation {
                             outputText += text
                             tokenCount += 1
-                            
-                            // Update the UI token counter periodically to save CPU
-                            if tokenCount % 10 == 0 {
-                                self.activeContextTokens = baseTokens + tokenCount
-                            }
 
                             if tokenCount >= config.maxTokens { break }
-                            
-                            // Hard-stop constraint for Gemma 2/3 and DeepSeek MoE bounds since MLX fails to parse multi-array JSON eos_token_id manifests.
-                            if outputText.contains("<end_of_turn>") || outputText.contains("<|im_end|>") || outputText.contains("<|eot_id|>") {
-                                let clamped = text.replacingOccurrences(of: "<end_of_turn>", with: "")
-                                                  .replacingOccurrences(of: "<|im_end|>", with: "")
-                                                  .replacingOccurrences(of: "<|eot_id|>", with: "")
-                                continuation.yield(GenerationToken(text: clamped, isThinking: thinkingActive))
-                                break
-                            }
 
                             if config.enableThinking {
                                 if outputText.contains("<think>") && !outputText.contains("</think>") {

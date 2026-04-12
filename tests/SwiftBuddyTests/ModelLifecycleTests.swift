@@ -7,13 +7,22 @@ import UIKit
 
 final class ModelLifecycleTests: XCTestCase {
 
-    // Feature 11: Staff Picks Check
+    // Feature 11: RAM Budget Checks
     @MainActor
-    func testFeature11_StaffPicksAvailable() {
-        // Since we migrated from RAM-based filtering to Staff Picks, we verify the catalog curates high-quality defaults.
-        let picks = ModelCatalog.staffPicks
-        XCTAssertTrue(picks.contains { $0.id.contains("Qwen3.5-4B") })
-        XCTAssertTrue(picks.count >= 4)
+    func testFeature11_RAMBudgetFiltersModels() {
+        let manager = ModelDownloadManager()
+        let models = manager.modelsForDevice()
+        
+        // This will rely on the device running the tests, but let's do a strict boundary test
+        // on the Catalog logic instead.
+        let device6GB = DeviceProfile(physicalRAMGB: 6.0, isAppleSilicon: true)
+        let fits = ModelCatalog.recommended(for: device6GB, safetyMargin: 0.25)
+        
+        // 6 * 0.75 = 4.5GB usable.
+        // Qwen 2.5 7B needs 4.2GB, should be there.
+        // Qwen 2.5 14B needs 8.5GB, should NOT be there.
+        XCTAssertTrue(fits.contains { $0.id == "mlx-community/Qwen2.5-7B-Instruct-4bit" })
+        XCTAssertFalse(fits.contains { $0.id == "mlx-community/Qwen2.5-14B-Instruct-4bit" })
     }
 
     // Feature 12: Thermal Throttling Intercepts
@@ -48,24 +57,27 @@ final class ModelLifecycleTests: XCTestCase {
 
     // Feature 14: SSD Streaming (MoE bypassing)
     func testFeature14_SSDStreamingConfigBypass() {
-        let qwenMoE = ModelCatalog.all.first { $0.id == "mlx-community/Qwen3.5-35B-A3B-4bit" }!
+        let qwen30B = ModelCatalog.all.first { $0.id == "mlx-community/Qwen3-30B-A3B-4bit" }!
         
-        // A 35B MoE requires far less active RAM than parameter count.
-        XCTAssertTrue(qwenMoE.isMoE)
+        // A 30B MoE requires far less active RAM than parameter count.
+        // Needs ~4.5GB, but streams effectively.
+        XCTAssertTrue(qwen30B.isMoE)
         
         let device8GB = DeviceProfile(physicalRAMGB: 8.0, isAppleSilicon: true)
-        let status = ModelCatalog.fitStatus(for: qwenMoE, on: device8GB)
+        let status = ModelCatalog.fitStatus(for: qwen30B, on: device8GB)
         
+        // 8GB RAM * 0.75 = 6GB. Since Model Needs 4.5, it actually .fits!
         XCTAssertEqual(status, .fits)
         
         let device2GB = DeviceProfile(physicalRAMGB: 2.0, isAppleSilicon: true)
-        let status2 = ModelCatalog.fitStatus(for: qwenMoE, on: device2GB)
+        let status2 = ModelCatalog.fitStatus(for: qwen30B, on: device2GB)
         XCTAssertEqual(status2, .requiresFlash)
     }
 
     // Feature 15: TurboQuant Footprint Estimates
     func testFeature15_TurboQuantFootprint() {
-        let qwen27 = ModelCatalog.all.first { $0.id == "mlx-community/Qwen3.5-27B-4bit" }!
+        // Evaluate the TurboQuant flags internally
+        let qwen32 = ModelCatalog.all.first { $0.id == "mlx-community/Qwen3-32B-4bit" }!
         let mixtralMoE = ModelCatalog.all.first { $0.id == "mlx-community/Qwen3.5-35B-A3B-4bit" }!
         
         // Both are massive. Mixtral ~35B MoE should require minimal footprint (TurboQuant/SSD).
@@ -73,7 +85,7 @@ final class ModelLifecycleTests: XCTestCase {
         XCTAssertTrue(mixtralMoE.isMoE)
         XCTAssertEqual(mixtralMoE.ramRequiredGB, 5.5) // TurboQuant active mapping
         
-        // Non-MoE 27B needs 16GB natively in 4-bit!
-        XCTAssertEqual(qwen27.ramRequiredGB, 16.0)
+        // Non-MoE 32B needs 19GB natively in 4-bit!
+        XCTAssertEqual(qwen32.ramRequiredGB, 19.0)
     }
 }

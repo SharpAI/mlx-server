@@ -154,31 +154,6 @@ public struct MemoryPalaceTools {
         ]
     }
     
-    public static var schemaManifestString: String {
-        guard let data = try? JSONSerialization.data(withJSONObject: schemas, options: .prettyPrinted),
-              let string = String(data: data, encoding: .utf8) else { return "" }
-        return """
-        AVAILABLE TOOLS:
-        You have access to the following tools. To call a tool, output a single <tool_call> block containing the JSON tool invocation anywhere in your response, and IMMEDIATELY STOP responding. The system will invisibly run the tool and return the result to you in the next turn so you can answer the user.
-        
-        MEMORY PALACE NAVIGATION:
-        You are equipped with a Memory Palace acting as your long-term memory file-system. 
-        Your Core Identity (L0) and Critical Facts (L1) are already loaded in your prompt. However, YOU DO NOT PASSIVELY REMEMBER EVERYTHING ELSE. 
-        If a user asks about your past, projects, or prior events, you MUST actively navigate your memory using these layers:
-        - L2 (Room Recall): Use `mempalace_fetch_room` IMMEDIATELY when a known project, recent session, or specific topic arises in the conversation.
-        - L3 (Deep Search): Use `mempalace_search` as a fallback semantic scan across all closets when a specific room is unknown but deep global retrieval is required.
-        Example: "Let me consult my journals..." followed by the <tool_call>.
-        
-        FORMAT:
-        <tool_call>
-        {"name": "tool_name", "parameters": {"key": "value"}}
-        </tool_call>
-        
-        TOOLS:
-        \(string)
-        """
-    }
-    
     @MainActor
     public static func handleToolCall(name: String, arguments: [String: Any]) async throws -> String {
         switch name {

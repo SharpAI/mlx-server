@@ -11,13 +11,11 @@ This directory is the **single source of truth** for continuous TDD loops on the
 
 ## Harnesses
 
-| Harness | Path | Scope | Features |
-|---------|------|-------|----------|
-| Memory Handling | `memory/` | JSON extraction from LLM output. ExtractionService resilience. | 9 ✅ |
-| Model Management | `model-management/` | HuggingFace search, MLX filtering, UI state correctness. | — |
-| MemPalace Parity | `mempalace-parity/` | Feature parity with [milla-jovovich/mempalace](https://github.com/milla-jovovich/mempalace) (v3.0.0). | — |
-| **VLM Pipeline** | `vlm/` | Vision-Language Model loading, image parsing, multimodal inference, registry completeness. | 12 🔲 |
-| **Audio Pipeline** | `audio/` | Audio input/output: mel spectrograms, Whisper STT, multimodal fusion, TTS vocoder. | 20 🔲 |
+| Harness | Path | Scope |
+|---------|------|-------|
+| Memory Handling | `memory/` | JSON extraction from LLM output. ExtractionService resilience. |
+| Model Management | `model-management/` | HuggingFace search, MLX filtering, UI state correctness. |
+| MemPalace Parity | `mempalace-parity/` | Feature parity with [milla-jovovich/mempalace](https://github.com/milla-jovovich/mempalace) (v3.0.0). |
 
 ## File Conventions
 

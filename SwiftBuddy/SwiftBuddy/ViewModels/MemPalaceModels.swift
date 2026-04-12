@@ -49,60 +49,18 @@ final class MemoryEntry {
 }
 
 @Model
-public final class KnowledgeGraphTriple {
-    @Attribute(.unique) public var id: String // e.g. "subject_predicate"
-    public var subject: String
-    public var predicate: String
-    public var object: String
-    public var dateObserved: Date
-    public var taxonomy: String?
-    public var confidence: String?
+final class KnowledgeGraphTriple {
+    @Attribute(.unique) var id: String // e.g. "subject_predicate"
+    var subject: String
+    var predicate: String
+    var object: String
+    var dateObserved: Date
     
-    init(subject: String, predicate: String, object: String, dateObserved: Date = Date(), taxonomy: String? = nil, confidence: String? = nil) {
+    init(subject: String, predicate: String, object: String, dateObserved: Date = Date()) {
         self.id = "\(subject.lowercased())_\(predicate.lowercased())" // Enforce temporal overwrite (one predicate per subject)
         self.subject = subject
         self.predicate = predicate
         self.object = object
         self.dateObserved = dateObserved
-        self.taxonomy = taxonomy
-        self.confidence = confidence
-    }
-}
-
-// MARK: - Persistent Chat History 
-
-@Model
-final class ChatSession {
-    @Attribute(.unique) var id: UUID
-    var wingName: String? // nil applies to the 'Core System Chat'
-    var createdAt: Date
-    
-    @Relationship(deleteRule: .cascade, inverse: \ChatTurn.session)
-    var turns: [ChatTurn] = []
-    
-    init(id: UUID = UUID(), wingName: String? = nil, createdAt: Date = Date()) {
-        self.id = id
-        self.wingName = wingName
-        self.createdAt = createdAt
-    }
-}
-
-@Model
-final class ChatTurn {
-    @Attribute(.unique) var id: UUID
-    var roleRaw: String      // "user", "assistant", "system"
-    var content: String
-    var thinkingContent: String?
-    var timestamp: Date
-    
-    var session: ChatSession?
-    
-    init(id: UUID = UUID(), roleRaw: String, content: String, thinkingContent: String? = nil, timestamp: Date = Date(), session: ChatSession? = nil) {
-        self.id = id
-        self.roleRaw = roleRaw
-        self.content = content
-        self.thinkingContent = thinkingContent
-        self.timestamp = timestamp
-        self.session = session
     }
 }
