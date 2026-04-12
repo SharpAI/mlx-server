@@ -123,7 +123,7 @@ jobs:
   speculative-decoding:
     runs-on: macos-15
     timeout-minutes: 45
-    needs: ci  # Only run after core CI passes
+    needs: integration_matrix  # Only run after core CI passes
     steps:
       - uses: actions/checkout@v4
         with:
@@ -194,7 +194,7 @@ jobs:
   speculative-decoding-eval:
     runs-on: macos-15
     timeout-minutes: 45
-    needs: ci
+    needs: integration_matrix
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
