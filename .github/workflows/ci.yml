@@ -106,3 +106,75 @@ jobs:
           name: ci-test-logs
           path: /tmp/SwiftLM-test-*.log
           retention-days: 7
+
+  # ── Speculative Decoding E2E (dual-model: 0.8B draft + 9B main) ──
+  # Requires macos-15-xlarge (14 GB) — standard runner (7 GB) can't fit
+  # two models simultaneously. Tests the novel "small model helps large
+  # model" speculative decoding path from PR #26.
+  speculative-decoding:
+    runs-on: macos-15-xlarge
+    timeout-minutes: 45
+    needs: ci  # Only run after core CI passes
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Metal Toolchain
+        run: xcodebuild -downloadComponent MetalToolchain || true
+
+      - name: Cache Swift packages
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: ${{ runner.os }}-spm-SwiftLM-v2-${{ hashFiles('Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-SwiftLM-v2-
+
+      - name: Clear stale module cache
+        run: find .build -type d -name ModuleCache -exec rm -rf {} + 2>/dev/null || true
+
+      - name: Resolve dependencies
+        run: swift package resolve
+
+      - name: Build (Release)
+        run: swift build -c release
+
+      - name: Install MLX Metal library
+        run: |
+          python3 -m venv /tmp/mlx_venv
+          /tmp/mlx_venv/bin/pip install --quiet mlx
+          cp /tmp/mlx_venv/lib/python*/site-packages/mlx/lib/mlx.metallib .build/release/
+
+      - name: Cache MLX models (draft + main)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: mlx-speculative-qwen35-0.8b-9b
+
+      - name: Run speculative decoding E2E
+        env:
+          HF_HUB_DOWNLOAD_TIMEOUT: "900"
+        run: |
+          chmod +x tests/test-speculative.sh
+          for attempt in 1 2 3; do
+            echo "Attempt $attempt of 3..."
+            if tests/test-speculative.sh .build/release/SwiftLM 15414; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "Test failed, retrying in 10s..."
+              sleep 10
+            fi
+          done
+          echo "All attempts failed"
+          exit 1
+
+      - name: Upload speculative test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: speculative-test-logs
+          path: /tmp/SwiftLM-test-speculative.log
+          retention-days: 7
+
