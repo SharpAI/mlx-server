@@ -46,10 +46,13 @@ EOF
 
 echo "Running Integration Pipeline against Omni Mock Generator..."
 
-# Assuming SwiftBuddy or benchmark script takes json payload. 
-# In SwiftLM we would just trigger the unit tests specifically handling Omni parsing if the full e2e hasn't been coded to CLI.
-# Using swift test as the generic harness mechanism here.
-swift test --filter SwiftLMTests.testGemma4Audio -c release >> "$LOG_FILE" 2>&1 || echo "⚠️  No explicit XCTest found yet, relying on compilation verification."
+# Trigger the Omni Evaluation Test (Test 6) and select the 4bit Gemma model (Option 2) automatically
+echo -e "6\n2\n" | HEADLESS=1 ./run_benchmark.sh >> "$LOG_FILE" 2>&1
+
+if [ $? -ne 0 ]; then
+    echo "❌ [FAILED] Benchmark Test completely failed or crashed. See $LOG_FILE"
+    exit 1
+fi
 
 echo "✅ [SUCCESS] Harness execution completed perfectly."
 echo "View diagnostic logs at $LOG_FILE"
