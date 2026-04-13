@@ -1022,7 +1022,7 @@ func handleChatCompletion(
     let temperature = chatReq.temperature.map(Float.init) ?? config.temp
     let topP = chatReq.topP.map(Float.init) ?? config.topP
     let repeatPenalty = chatReq.repetitionPenalty.map(Float.init) ?? config.repeatPenalty
-    let stopSequences = chatReq.stop ?? []
+    let stopSequences = (chatReq.stop ?? []) + ["<end_of_turn>", "<|im_end|>", "<|eot_id|>", "<turn|>", "<|tool_response|>"]
     let includeUsage = chatReq.streamOptions?.includeUsage ?? false
 
     // Log extra sampling params if provided (accepted for API compat, not all are used)
