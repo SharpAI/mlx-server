@@ -455,17 +455,21 @@ EOF
         echo "❌ ERROR: Server dropped the connection or crashed!"
         exit 1
     fi
-    # Extract content and strip any thinking blocks (content between <|channel>thought ... </|channel>)
+    # Extract content and strip any thinking blocks (server-strips most, belt-and-suspenders for any remainder)
     ALM_RES=$(echo "$RAW_ALM_OUT" | python3 -c "
 import sys, json, re
 d = json.load(sys.stdin)
 content = d.get('choices',[{}])[0].get('message',{}).get('content', '')
-# Strip thinking blocks
-content = re.sub(r'<\|channel\>thought.*?(?=\n[A-Z]|$)', '', content, flags=re.DOTALL).strip()
-print(content if content else 'ERROR')
+gen_tok = d.get('usage',{}).get('completion_tokens', 0)
+# Strip Gemma4 thinking blocks: <|channel|>thought ... <channel|>
+content = re.sub(r'<\|channel\|>thought.*?<channel\|>', '', content, flags=re.DOTALL).strip()
+if not content:
+    print(f'[WARN: gen_tokens={gen_tok}, empty response]')
+else:
+    print(content)
 ")
-    if [ -z "$ALM_RES" ] || [[ "$ALM_RES" == *"ERROR"* ]]; then
-        echo "❌ ERROR: JSON Decode failed on Turn 1!"
+    if [ -z "$ALM_RES" ]; then
+        echo "❌ ERROR: Server dropped turn 1 connection!"
         exit 1
     fi
     echo -e "\n🎤 ALM Turn 1 Transcription:\n  → $ALM_RES\n"
@@ -508,11 +512,11 @@ EOF
 import sys, json, re
 d = json.load(sys.stdin)
 content = d.get('choices',[{}])[0].get('message',{}).get('content', '')
-content = re.sub(r'<\|channel\>thought.*?(?=\n[A-Z]|$)', '', content, flags=re.DOTALL).strip()
-print(content if content else 'ERROR')
+content = re.sub(r'<\|channel\|>thought.*?<channel\|>', '', content, flags=re.DOTALL).strip()
+print(content if content else '[empty]')
 ")
-    if [ -z "$ALM_RES_2" ] || [[ "$ALM_RES_2" == *"ERROR"* ]]; then
-        echo "❌ ERROR: JSON Decode failed on Turn 2!"
+    if [ -z "$ALM_RES_2" ]; then
+        echo "❌ ERROR: Server dropped turn 2 connection!"
         exit 1
     fi
     echo -e "\n🎤 ALM Turn 2 Summary:\n  → $ALM_RES_2\n"
