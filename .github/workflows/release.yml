@@ -68,8 +68,25 @@ jobs:
           echo "$CHANGELOG" > /tmp/changelog.txt
           echo "Generated changelog with $(echo "$CHANGELOG" | wc -l | tr -d ' ') entries"
 
+      - name: Cache Swift packages
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: ${{ runner.os }}-spm-release-${{ hashFiles('Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-release-
+
       - name: Build (Release)
-        run: ./build.sh
+        run: |
+          swift package resolve
+          swift build -c release
+
+      - name: Install MLX Metal library
+        run: |
+          python3 -m venv /tmp/mlx_venv
+          /tmp/mlx_venv/bin/pip install --quiet mlx
+          MLX_LIB=$(find /tmp/mlx_venv -name "mlx.metallib" | head -n 1)
+          cp "$MLX_LIB" .build/release/mlx.metallib
 
       - name: Verify binary
         run: |
@@ -81,7 +98,7 @@ jobs:
         run: |
           mkdir -p release
           cp .build/release/SwiftLM release/
-          cp .build/arm64-apple-macosx/release/mlx.metallib release/
+          cp .build/release/mlx.metallib release/
           cp LICENSE README.md release/
           cd release
           # Verify the tarball will be self-contained before archiving
