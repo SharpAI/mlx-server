@@ -1,7 +1,7 @@
 import XCTest
 @testable import SwiftBuddy
 import MLXInferenceCore
-@testable import MLXVLM
+@preconcurrency @testable import MLXVLM
 @preconcurrency import MLXLMCommon
 
 struct MockTokenizer: MLXLMCommon.Tokenizer {

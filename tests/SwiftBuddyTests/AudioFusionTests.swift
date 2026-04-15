@@ -1,7 +1,7 @@
 import XCTest
 import MLX
 import MLXInferenceCore
-import MLXLLM
+import MLXVLM
 import Foundation
 
 final class AudioFusionTests: XCTestCase {
