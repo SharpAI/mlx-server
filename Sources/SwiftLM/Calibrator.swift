@@ -230,7 +230,10 @@ enum Calibrator {
             let inputTokenCount = lmInput.text.tokens.size
             
             let result: InferenceResult = try await container.perform { context in
-                let generateParams = GenerateParameters(temperature: 0.6)
+                var generateParams = GenerateParameters(temperature: 0.6)
+                generateParams.topP = 1.0
+                generateParams.topK = 50
+                generateParams.minP = 0.0
                 
                 let ttftStart = Date()
                 var firstTokenTime: Date?

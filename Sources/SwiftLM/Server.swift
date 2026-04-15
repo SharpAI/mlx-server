@@ -215,6 +215,12 @@ struct MLXServer: AsyncParsableCommand {
     @Option(name: .long, help: "Default top-p nucleus sampling (overridable per-request)")
     var topP: Float = 1.0
 
+    @Option(name: .long, help: "Default top-k sampling (overridable per-request)")
+    var topK: Int?
+
+    @Option(name: .long, help: "Default min-p sampling (overridable per-request)")
+    var minP: Float?
+
     @Option(name: .long, help: "Repetition penalty factor (overridable per-request)")
     var repeatPenalty: Float?
 
@@ -541,6 +547,8 @@ struct MLXServer: AsyncParsableCommand {
             ctxSize: self.ctxSize,
             temp: self.temp,
             topP: self.topP,
+            topK: self.topK,
+            minP: self.minP,
             repeatPenalty: self.repeatPenalty,
             thinking: self.thinking,
             isVision: isVision,
@@ -567,6 +575,8 @@ struct MLXServer: AsyncParsableCommand {
         let stats = ServerStats()
 
         let ctxSizeStr = config.ctxSize.map { String($0) } ?? "model_default"
+        let topKStr = config.topK.map { String($0) } ?? "disabled"
+        let minPStr = config.minP.map { String($0) } ?? "disabled"
         let penaltyStr = config.repeatPenalty.map { String($0) } ?? "disabled"
         let corsStr = corsOrigin ?? "disabled"
         let memLimitStr = self.memLimit.map { "\($0)MB" } ?? "system_default"
@@ -574,7 +584,7 @@ struct MLXServer: AsyncParsableCommand {
         let thinkingStr = config.thinking ? "enabled" : "disabled"
         let ssdStr = self.streamExperts ? "enabled" : "disabled"
         let turboKVStr = config.turboKV ? "enabled" : "disabled"
-        print("[SwiftLM] Config: ctx_size=\(ctxSizeStr), temp=\(config.temp), top_p=\(config.topP), repeat_penalty=\(penaltyStr), parallel=\(parallelSlots), cors=\(corsStr), mem_limit=\(memLimitStr), auth=\(authStr), thinking=\(thinkingStr), ssd_stream=\(ssdStr), turbo_kv=\(turboKVStr)")
+        print("[SwiftLM] Config: ctx_size=\(ctxSizeStr), temp=\(config.temp), top_p=\(config.topP), top_k=\(topKStr), min_p=\(minPStr), repeat_penalty=\(penaltyStr), parallel=\(parallelSlots), cors=\(corsStr), mem_limit=\(memLimitStr), auth=\(authStr), thinking=\(thinkingStr), ssd_stream=\(ssdStr), turbo_kv=\(turboKVStr)")
 
         // ── Build Hummingbird router ──
         let router = Router()
@@ -811,6 +821,8 @@ struct ServerConfig: Sendable {
     let ctxSize: Int?
     let temp: Float
     let topP: Float
+    let topK: Int?
+    let minP: Float?
     let repeatPenalty: Float?
     let thinking: Bool
     let isVision: Bool
@@ -1023,12 +1035,14 @@ func handleChatCompletion(
     let tokenLimit = chatReq.maxTokens ?? config.maxTokens
     let temperature = chatReq.temperature.map(Float.init) ?? config.temp
     let topP = chatReq.topP.map(Float.init) ?? config.topP
+    let topK = chatReq.topK ?? config.topK ?? 50
+    let minP = chatReq.minP.map(Float.init) ?? config.minP ?? 0.0
     let repeatPenalty = chatReq.repetitionPenalty.map(Float.init) ?? config.repeatPenalty
     let stopSequences = (chatReq.stop ?? []) + ["<end_of_turn>", "<|im_end|>", "<|eot_id|>", "<turn|>", "<|tool_response|>"]
     let includeUsage = chatReq.streamOptions?.includeUsage ?? false
 
     // Log extra sampling params if provided (accepted for API compat, not all are used)
-    if chatReq.topK != nil || chatReq.frequencyPenalty != nil || chatReq.presencePenalty != nil {
+    if chatReq.frequencyPenalty != nil || chatReq.presencePenalty != nil {
         // These are accepted but may not affect generation if MLX doesn't support them
     }
 
@@ -1037,6 +1051,8 @@ func handleChatCompletion(
         maxKVSize: config.ctxSize,
         temperature: temperature,
         topP: topP,
+        topK: topK,
+        minP: minP,
         repetitionPenalty: repeatPenalty,
         prefillStepSize: config.prefillSize
     )
@@ -1682,6 +1698,8 @@ func handleTextCompletion(
     let tokenLimit = compReq.maxTokens ?? config.maxTokens
     let temperature = compReq.temperature.map(Float.init) ?? config.temp
     let topP = compReq.topP.map(Float.init) ?? config.topP
+    let topK = compReq.topK ?? config.topK ?? 50
+    let minP = compReq.minP.map(Float.init) ?? config.minP ?? 0.0
     let repeatPenalty = compReq.repetitionPenalty.map(Float.init) ?? config.repeatPenalty
     let stopSequences = compReq.stop ?? []
 
@@ -1690,6 +1708,8 @@ func handleTextCompletion(
         maxKVSize: config.ctxSize,
         temperature: temperature,
         topP: topP,
+        topK: topK,
+        minP: minP,
         repetitionPenalty: repeatPenalty,
         prefillStepSize: config.prefillSize
     )
@@ -2242,6 +2262,7 @@ struct ChatCompletionRequest: Decodable {
     let temperature: Double?
     let topP: Double?
     let topK: Int?
+    let minP: Double?
     let repetitionPenalty: Double?
     let frequencyPenalty: Double?
     let presencePenalty: Double?
@@ -2260,6 +2281,7 @@ struct ChatCompletionRequest: Decodable {
         case maxTokens = "max_tokens"
         case topP = "top_p"
         case topK = "top_k"
+        case minP = "min_p"
         case repetitionPenalty = "repetition_penalty"
         case frequencyPenalty = "frequency_penalty"
         case presencePenalty = "presence_penalty"
@@ -2277,6 +2299,8 @@ struct TextCompletionRequest: Decodable {
     let maxTokens: Int?
     let temperature: Double?
     let topP: Double?
+    let topK: Int?
+    let minP: Double?
     let repetitionPenalty: Double?
     let stop: [String]?
     let seed: Int?
@@ -2285,6 +2309,8 @@ struct TextCompletionRequest: Decodable {
         case model, prompt, stream, temperature, stop, seed
         case maxTokens = "max_tokens"
         case topP = "top_p"
+        case topK = "top_k"
+        case minP = "min_p"
         case repetitionPenalty = "repetition_penalty"
     }
 }

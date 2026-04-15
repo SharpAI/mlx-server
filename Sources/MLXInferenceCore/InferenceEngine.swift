@@ -393,6 +393,8 @@ public final class InferenceEngine: ObservableObject {
                     let mlxMessages = finalMessages
                     var params = GenerateParameters(temperature: config.temperature)
                     params.topP = config.topP
+                    params.topK = config.topK
+                    params.minP = config.minP
                     params.repetitionPenalty = config.repetitionPenalty
                     params.repetitionContextSize = 20
 
