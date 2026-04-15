@@ -1,19 +1,14 @@
 #!/bin/bash
-# test-omni.sh — Omni (Vision + Audio) Integration tests for SwiftLM
-#
-# Usage:
-#   ./tests/test-omni.sh [binary_path] [port]
+# test-omni.sh — Omni E2E Validation Tests (using real media assets)
 
 set -euo pipefail
 
 BINARY="${1:-.build/release/SwiftLM}"
 PORT="${2:-15413}"
 HOST="127.0.0.1"
-MODEL="mlx-community/gemma-4-e4b-it-4bit" # CI Small Omni
+MODEL="mlx-community/gemma-4-e4b-it-4bit"
 URL="http://${HOST}:${PORT}"
-PASS=0
-FAIL=0
-TOTAL=0
+START_SERVER=${START_SERVER:-1}
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -21,11 +16,39 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 log()  { echo -e "${YELLOW}[test-omni]${NC} $*"; }
-pass() { PASS=$((PASS + 1)); TOTAL=$((TOTAL + 1)); echo -e "  ${GREEN}✅ PASS${NC}: $*"; }
-fail() { FAIL=$((FAIL + 1)); TOTAL=$((TOTAL + 1)); echo -e "  ${RED}❌ FAIL${NC}: $*"; }
+pass() { echo -e "  ${GREEN}✅ PASS${NC}: $*"; }
+fail() { echo -e "  ${RED}❌ FAIL${NC}: $*"; exit 1; }
+
+check_transcription_match() {
+    local actual_text="$1"
+    local expected_text="$2"
+    python3 - "$actual_text" "$expected_text" <<'PY'
+import difflib, re, sys
+actual = sys.argv[1]
+expected = sys.argv[2]
+def normalize(text: str) -> str:
+    text = text.lower()
+    text = re.sub(r"<br\s*/?>", " ", text)
+    text = re.sub(r"[^a-z0-9']+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+actual_n = normalize(actual)
+expected_n = normalize(expected)
+actual_words = actual_n.split()
+expected_words = expected_n.split()
+expected_prefix_n = " ".join(expected_words[:len(actual_words)]).strip()
+full_ratio = difflib.SequenceMatcher(None, actual_n, expected_n).ratio()
+prefix_ratio = difflib.SequenceMatcher(None, actual_n, expected_prefix_n).ratio() if actual_n else 0.0
+prefix_exact = bool(actual_words) and actual_words == expected_words[:len(actual_words)]
+if actual_n == expected_n or prefix_exact or prefix_ratio >= 0.85 or full_ratio >= 0.90:
+    print("ok")
+else:
+    print(f"fail:{full_ratio:.3f}:{actual_n}:{expected_n}")
+PY
+}
 
 cleanup() {
-    if [ -n "${SERVER_PID:-}" ]; then
+    if [ "$START_SERVER" == "1" ] && [ -n "${SERVER_PID:-}" ]; then
         log "Stopping server (PID $SERVER_PID)"
         kill -9 "$SERVER_PID" 2>/dev/null || true
         wait "$SERVER_PID" 2>/dev/null || true
@@ -33,66 +56,72 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ── Start server ─────────────────────────────────────────────────────
-log "Starting server: $BINARY --model $MODEL --port $PORT --vision --audio"
-"$BINARY" --model "$MODEL" --port "$PORT" --host "$HOST" --vision --audio &
-SERVER_PID=$!
+if [ "$START_SERVER" == "1" ]; then
+    log "Starting server: $BINARY --model $MODEL --port $PORT --vision --audio"
+    "$BINARY" --model "$MODEL" --port "$PORT" --host "$HOST" --vision --audio &
+    SERVER_PID=$!
 
-log "Waiting for server to be ready (this may take a while on first run)..."
-MAX_WAIT=600  # 10 minutes for model download
-for i in $(seq 1 "$MAX_WAIT"); do
-    if curl -sf "$URL/health" >/dev/null 2>&1; then
-        log "Server ready after ${i}s"
-        break
-    fi
-    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-        echo "Error: Server process died"
-        exit 1
-    fi
-    sleep 1
-done
-
-if ! curl -sf "$URL/health" >/dev/null 2>&1; then
-    echo "Error: Server did not become ready in ${MAX_WAIT}s"
-    exit 1
+    log "Waiting for server to be ready..."
+    MAX_WAIT=600
+    for i in $(seq 1 "$MAX_WAIT"); do
+        if curl -sf "$URL/health" >/dev/null 2>&1; then
+            log "Server ready after ${i}s"
+            break
+        fi
+        sleep 1
+    done
 fi
 
-# ── Test Omni ──────────────────────────────────────────────────────────
-mkdir -p /tmp/omni_test
+EXPECTED_TRANSCRIPT="Security alert. A brown and white dog has been detected on the camera. Please send assistance to the front gate immediately."
+IMG_PATH="tests/fixtures/omni/dog.jpg"
+AUDIO_PATH="tests/fixtures/omni/alert.wav"
 
-# Gen Audio
-cat << 'EOF' > /tmp/omni_test/gen.py
-import wave, struct, math
-with wave.open('/tmp/omni_test/test.wav', 'w') as w:
-    w.setnchannels(1)
-    w.setsampwidth(2)
-    w.setframerate(16000)
-    for i in range(16000):
-        v = int(math.sin(i * 440.0 * 2.0 * math.pi / 16000.0) * 10000.0)
-        w.writeframes(struct.pack('<h', v))
-EOF
-python3 /tmp/omni_test/gen.py
-BASE64_AUDIO=$(base64 -i /tmp/omni_test/test.wav | tr -d '\n')
+if [ ! -f "$IMG_PATH" ] || [ ! -f "$AUDIO_PATH" ]; then
+    fail "Required fixture assets not found in tests/fixtures/omni/"
+fi
 
-# 28x28 black PNG (requires multiple of 28 for Qwen2-VL patch embedder)
-BASE64_IMG="iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAIAAAD9b0jDAAAAGUlEQVR4nO3BMQEAAADCoPVPbQdvoAAA6DQJTAABRMAOLAAAAABJRU5ErkJggg=="
+BASE64_IMG=$(base64 -i "$IMG_PATH" | tr -d '\n')
+BASE64_AUDIO=$(base64 -i "$AUDIO_PATH" | tr -d '\n')
 
-# Payload with both audio and image
-cat <<EOF > /tmp/omni_test/payload.json
-{"model":"$MODEL","max_tokens":100,"messages":[{"role":"user","content":[{"type":"text","text":"What color is the image? Please also respond to the audio beep."},{"type":"image_url","image_url":{"url":"data:image/png;base64,${BASE64_IMG}"}},{"type":"input_audio","input_audio":{"data":"${BASE64_AUDIO}","format":"wav"}}]}]}
-EOF
+cat <<PAYLOAD > /tmp/omni_payload.json
+{
+  "model": "$MODEL",
+  "max_tokens": 100,
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,${BASE64_IMG}"}},
+        {"type": "text", "text": "First describe the image in one sentence. Then transcribe the spoken words from the audio clip verbatim. The audio clip is present and contains speech."},
+        {"type": "input_audio", "input_audio": {"data": "${BASE64_AUDIO}", "format": "wav"}}
+      ]
+    }
+  ]
+}
+PAYLOAD
 
-COMPLETION=$(curl -sf -X POST "$URL/v1/chat/completions" \
-    -H "Content-Type: application/json" \
-    -d @"/tmp/omni_test/payload.json")
+log "Sending benchmark payload..."
+COMPLETION=$(curl -sf -X POST "$URL/v1/chat/completions" -H "Content-Type: application/json" -d @/tmp/omni_payload.json)
 
-if echo "$COMPLETION" | jq -e '.choices[0].message.content' >/dev/null 2>&1; then
-    CONTENT=$(echo "$COMPLETION" | jq -r '.choices[0].message.content')
-    pass "Omni successfully analyzed both vision and audio. Output: \"$CONTENT\""
+if ! echo "$COMPLETION" | jq -e '.choices[0].message.content' >/dev/null 2>&1; then
+    fail "Omni completion failed/empty: $COMPLETION"
+fi
+
+RAW_CONTENT=$(echo "$COMPLETION" | jq -r '.choices[0].message.content')
+# Strip any thinking
+CONTENT=$(echo "$RAW_CONTENT" | sed -E 's/<\|channel\|>thought.*<channel\|>//g')
+
+# Extract last paragraph as transcript
+TRANSCRIPT=$(echo "$CONTENT" | awk -v RS="" 'END {print}')
+
+MATCH=$(check_transcription_match "$TRANSCRIPT" "$EXPECTED_TRANSCRIPT")
+
+if [[ "$MATCH" == "ok" ]]; then
+    pass "Transcription perfectly matched or strongly aligned!"
+    log "Output: $CONTENT"
 else
-    fail "Omni completion failed: $COMPLETION"
-    exit 1
+    fail "Transcription did not match sufficiently.\nExpected: $EXPECTED_TRANSCRIPT\nGot: $TRANSCRIPT\nMatch Data: $MATCH"
 fi
 
-rm -rf /tmp/omni_test
+rm -f /tmp/omni_payload.json
 exit 0
