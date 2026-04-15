@@ -15,6 +15,8 @@ final class AudioFusionTests: XCTestCase {
         let jsonPayload = """
         {
             "model_type": "gemma4",
+            "text_config": {},
+            "vision_config": {},
             "audio_config": {
                 "model_type": "gemma4_audio",
                 "hidden_size": 1024,
