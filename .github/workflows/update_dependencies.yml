@@ -1,0 +1,51 @@
+name: Dependency Automation
+
+on:
+  repository_dispatch:
+    types: [dependency_bump]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Update swift-mlx dependencies
+        if: ${{ github.event.client_payload.source_repo == 'mlx-swift' }}
+        run: |
+          echo "Bumping mlx-swift dependency to ${{ github.event.client_payload.new_tag }}"
+          # In Package.swift we depend on branch main, but if we wanted to depend on a tag:
+          # SwiftPM resolves "main" to the latest commit automatically, but updating the SPM resolved file ensures deterministic builds:
+          swift package update mlx-swift
+
+      - name: Update swift-mlx-lm dependencies
+        if: ${{ github.event.client_payload.source_repo == 'mlx-swift-lm' }}
+        run: |
+          echo "Bumping local mlx-swift-lm submodule to ${{ github.event.client_payload.new_tag }}"
+          git submodule update --remote mlx-swift-lm
+          # Force the submodule onto the specific new release tag
+          cd mlx-swift-lm
+          git checkout ${{ github.event.client_payload.new_tag }}
+          cd ..
+          git add mlx-swift-lm
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore(deps): bump ${{ github.event.client_payload.source_repo }} to ${{ github.event.client_payload.new_tag }}"
+          title: "Update ${{ github.event.client_payload.source_repo }} Dependency to ${{ github.event.client_payload.new_tag }}"
+          body: |
+            Automated dependency update triggered by release `${{ github.event.client_payload.new_tag }}` in `SharpAI/${{ github.event.client_payload.source_repo }}`.
+            
+            This PR ensures SwiftLM is tracking the latest validated architectural improvements.
+          branch: "auto-update/${{ github.event.client_payload.source_repo }}-${{ github.event.client_payload.new_tag }}"
+          base: feature/swiftbuddy-mempalace-v1
