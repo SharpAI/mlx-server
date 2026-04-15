@@ -149,11 +149,14 @@ jobs:
       - name: Build (Release)
         run: swift build -c release
 
-      - name: Install MLX Metal library
+      - name: Compile and install custom MLX Metal library
         run: |
           python3 -m venv /tmp/mlx_venv
-          /tmp/mlx_venv/bin/pip install --quiet mlx
-          cp /tmp/mlx_venv/lib/python*/site-packages/mlx/lib/mlx.metallib .build/release/
+          source /tmp/mlx_venv/bin/activate
+          pip install --upgrade pip setuptools wheel pybind11 cmake
+          cd .build/checkouts/mlx-swift/Source/Cmlx/mlx
+          python setup.py build_ext --inplace
+          cp build/lib.*/mlx/lib/mlx.metallib ../../../../../../release/mlx.metallib
 
       - name: Cache MLX models (draft + main)
         uses: actions/cache@v4
@@ -221,11 +224,14 @@ jobs:
       - name: Build (Release)
         run: swift build -c release
       
-      - name: Install MLX Metal library
+      - name: Compile and install custom MLX Metal library
         run: |
           python3 -m venv /tmp/mlx_venv
-          /tmp/mlx_venv/bin/pip install --quiet mlx
-          cp /tmp/mlx_venv/lib/python*/site-packages/mlx/lib/mlx.metallib .build/release/
+          source /tmp/mlx_venv/bin/activate
+          pip install --upgrade pip setuptools wheel pybind11 cmake
+          cd .build/checkouts/mlx-swift/Source/Cmlx/mlx
+          python setup.py build_ext --inplace
+          cp build/lib.*/mlx/lib/mlx.metallib ../../../../../../release/mlx.metallib
       
       - name: Run speculative evaluation E2E
         env:
