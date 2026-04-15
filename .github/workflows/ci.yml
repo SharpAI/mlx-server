@@ -26,9 +26,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .build
-          key: ${{ runner.os }}-spm-SwiftLM-v3-${{ hashFiles('Package.resolved') }}
+          key: ${{ runner.os }}-spm-SwiftLM-v4-${{ hashFiles('Package.resolved') }}
           restore-keys: |
-            ${{ runner.os }}-spm-SwiftLM-v3-
+            ${{ runner.os }}-spm-SwiftLM-v4-
 
       - name: Clear stale module cache
         run: find .build -type d -name ModuleCache -exec rm -rf {} + 2>/dev/null || true
@@ -136,9 +136,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .build
-          key: ${{ runner.os }}-spm-SwiftLM-v2-${{ hashFiles('Package.resolved') }}
+          key: ${{ runner.os }}-spm-SwiftLM-v4-${{ hashFiles('Package.resolved') }}
           restore-keys: |
-            ${{ runner.os }}-spm-SwiftLM-v2-
+            ${{ runner.os }}-spm-SwiftLM-v4-
 
       - name: Clear stale module cache
         run: find .build -type d -name ModuleCache -exec rm -rf {} + 2>/dev/null || true
@@ -211,9 +211,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .build
-          key: ${{ runner.os }}-spm-SwiftLM-v2-${{ hashFiles('Package.resolved') }}
+          key: ${{ runner.os }}-spm-SwiftLM-v4-${{ hashFiles('Package.resolved') }}
           restore-keys: |
-            ${{ runner.os }}-spm-SwiftLM-v2-
+            ${{ runner.os }}-spm-SwiftLM-v4-
 
       - name: Clear stale module cache
         run: find .build -type d -name ModuleCache -exec rm -rf {} + 2>/dev/null || true
