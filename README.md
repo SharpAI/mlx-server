@@ -1,8 +1,5 @@
 # ⚡️ SwiftLM
 
-> [!WARNING]
-> **DEVELOPMENT NOTE:** The `mlx-swift-lm` SPM dependency is currently locked to the unmerged testing branch `feature/papps-ssd-streaming`. Do not merge to `main` without completing the module integration tests and reverting the URL target constraints.
-
 A blazingly fast, native Swift inference server that serves [MLX](https://github.com/ml-explore/mlx) models with a strict **OpenAI-compatible API**. 
 
 No Python runtime, no Global Interpreter Lock (GIL), no unnecessary memory copies. Just bare-metal Apple Silicon performance compiled to a single binary.
@@ -373,6 +370,8 @@ The breakthrough arrived when we realized the **embedding scale** was missing. T
 The model instantly woke up from "whispering" whitespace and successfully responded to `"What is 2+2?"` with a perfect `"2 + 2 equals 4."` — proving that the entire massive structural pipeline from Swift to Metal was working.
 
 ## 🙏 Acknowledgments & Credits
+
+[![Awesome MLX](https://img.shields.io/badge/Awesome-MLX-blue?style=flat-square)](https://github.com/raullenchai/awesome-mlx)
 
 `SwiftLM` leverages the powerful foundation of the Apple MLX community and relies heavily on the open-source ecosystem. While the custom C++ implementations, Metal optimizations, and high-performance pipeline architecture were engineered natively for this engine, we owe massive thanks to the following projects and contributors for their indispensable reference materials and underlying protocols:
 
