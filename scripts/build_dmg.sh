@@ -27,7 +27,6 @@ DMG_NAME="SwiftBuddy-macOS-v${VERSION}.dmg"
 
 create-dmg \
   --volname "SwiftBuddy" \
-  --volicon "$APP_PATH/Contents/Resources/AppIcon.icns" \
   --window-pos 200 120 \
   --window-size 800 400 \
   --icon-size 100 \
