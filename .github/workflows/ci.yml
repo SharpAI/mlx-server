@@ -153,7 +153,7 @@ jobs:
         run: |
           python3 -m venv /tmp/mlx_venv
           source /tmp/mlx_venv/bin/activate
-          pip install --upgrade pip setuptools wheel pybind11 cmake
+          pip install --upgrade pip setuptools wheel pybind11 cmake huggingface_hub
           cd .build/checkouts/mlx-swift/Source/Cmlx/mlx
           python setup.py build_ext --inplace
           cp build/lib.*/mlx/lib/mlx.metallib ../../../../../../.build/release/mlx.metallib
@@ -163,6 +163,12 @@ jobs:
         with:
           path: ~/.cache/huggingface
           key: mlx-speculative-qwen35-0.8b-9b
+
+      - name: Pre-download HuggingFace models
+        run: |
+          source /tmp/mlx_venv/bin/activate
+          huggingface-cli download mlx-community/Qwen3.5-9B-4bit || true
+          huggingface-cli download mlx-community/Qwen3.5-0.8B-MLX-4bit || true
 
       - name: Run speculative decoding E2E
         env:
@@ -228,10 +234,16 @@ jobs:
         run: |
           python3 -m venv /tmp/mlx_venv
           source /tmp/mlx_venv/bin/activate
-          pip install --upgrade pip setuptools wheel pybind11 cmake
+          pip install --upgrade pip setuptools wheel pybind11 cmake huggingface_hub
           cd .build/checkouts/mlx-swift/Source/Cmlx/mlx
           python setup.py build_ext --inplace
           cp build/lib.*/mlx/lib/mlx.metallib ../../../../../../.build/release/mlx.metallib
+
+      - name: Pre-download HuggingFace models
+        run: |
+          source /tmp/mlx_venv/bin/activate
+          huggingface-cli download mlx-community/Qwen3.5-9B-4bit || true
+          huggingface-cli download mlx-community/Qwen3.5-0.8B-MLX-4bit || true
       
       - name: Run speculative evaluation E2E
         env:
