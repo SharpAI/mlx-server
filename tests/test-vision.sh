@@ -4,7 +4,7 @@
 # Usage:
 #   ./tests/test-vision.sh [binary_path] [port]
 
-set -euo pipefail
+set -eo pipefail
 
 BINARY="${1:-.build/release/SwiftLM}"
 BASE_PORT="${2:-15413}"
