@@ -40,7 +40,7 @@ jobs:
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v6
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.SWIFTLM_PR_TOKEN }}
           commit-message: "chore(deps): bump ${{ github.event.client_payload.source_repo }} to ${{ github.event.client_payload.new_tag }}"
           title: "Update ${{ github.event.client_payload.source_repo }} Dependency to ${{ github.event.client_payload.new_tag }}"
           body: |
