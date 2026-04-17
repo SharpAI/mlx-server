@@ -157,7 +157,7 @@ def pbxproj():
 \t\t\t\t{BF_MLX_FWK} /* MLX in Frameworks */,
 \t\t\t\t{BF_MLXLLM_FWK} /* MLXLLM in Frameworks */,
 \t\t\t\t{BF_MLXLMC_FWK} /* MLXLMCommon in Frameworks */,
-				{BF_MLXVLM_FWK} /* MLXVLM in Frameworks */,
+\t\t\t\t{BF_MLXVLM_FWK} /* MLXVLM in Frameworks */,
 \t\t\t\t{BF_HUB_FWK} /* Hub in Frameworks */,
 \t\t\t\t{BF_TOKENIZERS_FWK} /* Tokenizers in Frameworks */,
 \t\t\t\t{BF_HUMMINGBIRD_FWK} /* Hummingbird in Frameworks */,
