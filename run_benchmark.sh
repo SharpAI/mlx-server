@@ -198,6 +198,7 @@ if [ "$suite_opt" == "4" ]; then
         "mlx-community/gemma-4-26b-a4b-it-4bit"
         "mlx-community/Qwen3.5-9B-MLX-4bit"
         "mlx-community/Qwen3.5-27B-4bit"
+        "LiquidAI/LFM2.5-VL-450M-MLX-4bit"
         "mlx-community/LFM2-VL-1.6B-4bit"
         "mlx-community/Qwen2-VL-2B-Instruct-4bit"
         "mlx-community/Qwen2-VL-7B-Instruct-4bit"

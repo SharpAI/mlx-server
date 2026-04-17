@@ -396,6 +396,15 @@ struct MLXServer: AsyncParsableCommand {
             }
         }
 
+        let cacheRoot = URL.applicationSupportDirectory
+            .appendingPathComponent("MLX", isDirectory: true)
+            .appendingPathComponent("HuggingFace", isDirectory: true)
+        let hub = HubApi(downloadBase: cacheRoot)
+        let downloader = HubDownloader(hub: hub)
+        let architecture = try await ModelArchitectureProbe.inspect(
+            configuration: modelConfig,
+            downloader: downloader
+        )
         let isVision = self.vision
         let container: ModelContainer
         
@@ -407,12 +416,8 @@ struct MLXServer: AsyncParsableCommand {
         let tracker = ProgressTracker(modelId: resolvedModelId)
         
         let isAudio = self.audio
-        let cacheRoot = URL.applicationSupportDirectory
-            .appendingPathComponent("MLX", isDirectory: true)
-            .appendingPathComponent("HuggingFace", isDirectory: true)
         if isVision && isAudio {
             print("[SwiftLM] Loading Omni-Language Model (Text + Vision + Audio)...")
-            let downloader = HubDownloader(hub: HubApi(downloadBase: cacheRoot))
             container = try await OmniModelFactory.shared.loadContainer(
                 from: downloader,
                 using: TransformersTokenizerLoader(),
@@ -422,7 +427,6 @@ struct MLXServer: AsyncParsableCommand {
             }
         } else if isVision {
             print("[SwiftLM] Loading VLM (vision-language model)...")
-            let downloader = HubDownloader(hub: HubApi(downloadBase: cacheRoot))
             container = try await VLMModelFactory.shared.loadContainer(
                 from: downloader,
                 using: TransformersTokenizerLoader(),
@@ -432,7 +436,6 @@ struct MLXServer: AsyncParsableCommand {
             }
         } else if isAudio {
             print("[SwiftLM] Loading ALM (audio-language model)...")
-            let downloader = HubDownloader(hub: HubApi(downloadBase: cacheRoot))
             // Use OmniModelFactory (VLM-backed) so Gemma4's audio tower is loaded
             // and the native prepareForMultimodal path extracts real mel features.
             container = try await OmniModelFactory.shared.loadContainer(
@@ -444,7 +447,6 @@ struct MLXServer: AsyncParsableCommand {
             }
         } else {
             print("[SwiftLM] Loading LLM (large language model)...")
-            let downloader = HubDownloader(hub: HubApi(downloadBase: cacheRoot))
             container = try await LLMModelFactory.shared.loadContainer(
                 from: downloader,
                 using: TransformersTokenizerLoader(),

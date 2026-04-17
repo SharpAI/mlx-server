@@ -4,13 +4,11 @@
 # Usage:
 #   ./tests/test-vision.sh [binary_path] [port]
 
-set -euo pipefail
+set -eo pipefail
 
 BINARY="${1:-.build/release/SwiftLM}"
-PORT="${2:-15413}"
+BASE_PORT="${2:-15413}"
 HOST="127.0.0.1"
-MODEL="mlx-community/Qwen2-VL-2B-Instruct-4bit" # CI Small VLM
-URL="http://${HOST}:${PORT}"
 PASS=0
 FAIL=0
 TOTAL=0
@@ -33,46 +31,66 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ── Start server ─────────────────────────────────────────────────────
-log "Starting server: $BINARY --model $MODEL --port $PORT --vision"
-"$BINARY" --model "$MODEL" --port "$PORT" --host "$HOST" --vision &
-SERVER_PID=$!
+wait_for_server() {
+    local url="$1"
+    local max_wait=600
+    log "Waiting for server to be ready (this may take a while on first run)..."
+    for i in $(seq 1 "$max_wait"); do
+        if curl -sf "$url/health" >/dev/null 2>&1; then
+            log "Server ready after ${i}s"
+            return 0
+        fi
+        if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+            echo "Error: Server process died"
+            return 1
+        fi
+        sleep 1
+    done
+    echo "Error: Server did not become ready in ${max_wait}s"
+    return 1
+}
 
-log "Waiting for server to be ready (this may take a while on first run)..."
-MAX_WAIT=600  # 10 minutes for model download
-for i in $(seq 1 "$MAX_WAIT"); do
-    if curl -sf "$URL/health" >/dev/null 2>&1; then
-        log "Server ready after ${i}s"
-        break
+run_case() {
+    local model="$1"
+    local port="$2"
+    local use_vision_flag="$3"
+    local url="http://${HOST}:${port}"
+    local extra_args=()
+
+    if [ "$use_vision_flag" = "yes" ]; then
+        extra_args+=(--vision)
     fi
-    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-        echo "Error: Server process died"
-        exit 1
+
+    log "Starting server: $BINARY --model $model --port $port ${extra_args[*]:-}"
+    "$BINARY" --model "$model" --port "$port" --host "$HOST" "${extra_args[@]}" &
+    SERVER_PID=$!
+
+    wait_for_server "$url"
+
+    local completion
+    completion=$(curl -sf -X POST "$url/v1/chat/completions" \
+        -H "Content-Type: application/json" \
+        -d "{\"model\":\"$model\",\"max_tokens\":100,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"What color is the image?\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,${BASE64_IMG}\"}}]}]}")
+
+    if echo "$completion" | jq -e '.choices[0].message.content' >/dev/null 2>&1; then
+        local content
+        content=$(echo "$completion" | jq -r '.choices[0].message.content')
+        pass "$model returned VLM output: \"$content\""
+    else
+        fail "$model VLM completion failed: $completion"
+        return 1
     fi
-    sleep 1
-done
 
-if ! curl -sf "$URL/health" >/dev/null 2>&1; then
-    echo "Error: Server did not become ready in ${MAX_WAIT}s"
-    exit 1
-fi
+    cleanup
+    SERVER_PID=""
+}
 
-# ── Test VLM ──────────────────────────────────────────────────────────
 mkdir -p /tmp/vision_test
 # 28x28 black PNG (requires multiple of 28 for Qwen2-VL patch embedder)
 BASE64_IMG="iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAIAAAD9b0jDAAAAGUlEQVR4nO3BMQEAAADCoPVPbQdvoAAA6DQJTAABRMAOLAAAAABJRU5ErkJggg=="
 
-COMPLETION=$(curl -sf -X POST "$URL/v1/chat/completions" \
-    -H "Content-Type: application/json" \
-    -d "{\"model\":\"$MODEL\",\"max_tokens\":100,\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"What color is the image?\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,${BASE64_IMG}\"}}]}]}")
-
-if echo "$COMPLETION" | jq -e '.choices[0].message.content' >/dev/null 2>&1; then
-    CONTENT=$(echo "$COMPLETION" | jq -r '.choices[0].message.content')
-    pass "VLM successfully analyzed statue of liberty image. Output: \"$CONTENT\""
-else
-    fail "VLM completion failed: $COMPLETION"
-    exit 1
-fi
+run_case "mlx-community/Qwen2-VL-2B-Instruct-4bit" "$BASE_PORT" "yes"
+run_case "LiquidAI/LFM2.5-VL-450M-MLX-4bit" "$((BASE_PORT + 1))" "yes"
 
 rm -rf /tmp/vision_test
 exit 0

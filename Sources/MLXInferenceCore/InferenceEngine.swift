@@ -5,6 +5,7 @@ import Foundation
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXVLM
 import Hub
 import Tokenizers
 #if canImport(UIKit)
@@ -305,25 +306,55 @@ public final class InferenceEngine: ObservableObject {
                 )
             }
 
-            container = try await LLMModelFactory.shared.loadContainer(
-                from: HubDownloader(hub: hub),
-                using: TransformersTokenizerLoader(),
-                configuration: config
-            ) { [weak self] progress in
-                Task { @MainActor in
-                    guard let self else { return }
-                    let pct = progress.fractionCompleted
-                    let speedBytesPerSec = progress.userInfo[ProgressUserInfoKey("throughputKey")] as? Double
-                    let speedStr = speedBytesPerSec
-                        .map { String(format: "%.1f MB/s", $0 / 1_000_000) } ?? ""
-                    self.state = .downloading(progress: pct, speed: speedStr)
+            let downloader = HubDownloader(hub: hub)
+            let architecture = try await ModelArchitectureProbe.inspect(
+                configuration: config,
+                downloader: downloader
+            )
 
-                    self.downloadManager.updateProgress(ModelDownloadProgress(
-                        modelId: modelId,
-                        fractionCompleted: pct,
-                        currentFile: "",
-                        speedMBps: speedBytesPerSec.map { $0 / 1_000_000 }
-                    ))
+            if architecture.supportsVision {
+                container = try await VLMModelFactory.shared.loadContainer(
+                    from: downloader,
+                    using: TransformersTokenizerLoader(),
+                    configuration: config
+                ) { [weak self] progress in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        let pct = progress.fractionCompleted
+                        let speedBytesPerSec = progress.userInfo[ProgressUserInfoKey("throughputKey")] as? Double
+                        let speedStr = speedBytesPerSec
+                            .map { String(format: "%.1f MB/s", $0 / 1_000_000) } ?? ""
+                        self.state = .downloading(progress: pct, speed: speedStr)
+
+                        self.downloadManager.updateProgress(ModelDownloadProgress(
+                            modelId: modelId,
+                            fractionCompleted: pct,
+                            currentFile: "",
+                            speedMBps: speedBytesPerSec.map { $0 / 1_000_000 }
+                        ))
+                    }
+                }
+            } else {
+                container = try await LLMModelFactory.shared.loadContainer(
+                    from: downloader,
+                    using: TransformersTokenizerLoader(),
+                    configuration: config
+                ) { [weak self] progress in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        let pct = progress.fractionCompleted
+                        let speedBytesPerSec = progress.userInfo[ProgressUserInfoKey("throughputKey")] as? Double
+                        let speedStr = speedBytesPerSec
+                            .map { String(format: "%.1f MB/s", $0 / 1_000_000) } ?? ""
+                        self.state = .downloading(progress: pct, speed: speedStr)
+
+                        self.downloadManager.updateProgress(ModelDownloadProgress(
+                            modelId: modelId,
+                            fractionCompleted: pct,
+                            currentFile: "",
+                            speedMBps: speedBytesPerSec.map { $0 / 1_000_000 }
+                        ))
+                    }
                 }
             }
 

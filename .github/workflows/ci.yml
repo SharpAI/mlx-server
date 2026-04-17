@@ -136,9 +136,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .build
-          key: ${{ runner.os }}-spm-SwiftLM-v2-${{ hashFiles('Package.resolved') }}
+          key: ${{ runner.os }}-spm-SwiftLM-v3-${{ hashFiles('Package.resolved') }}
           restore-keys: |
-            ${{ runner.os }}-spm-SwiftLM-v2-
+            ${{ runner.os }}-spm-SwiftLM-v3-
 
       - name: Clear stale module cache
         run: find .build -type d -name ModuleCache -exec rm -rf {} + 2>/dev/null || true
@@ -151,24 +151,41 @@ jobs:
 
       - name: Compile and install custom MLX Metal library
         run: |
+          # cmake-based build from SharpAI fork — mirrors build.sh (PR #58)
+          if [ -d "mlx-swift/Source/Cmlx/mlx" ]; then
+            MLX_SRC="mlx-swift/Source/Cmlx/mlx"
+          else
+            MLX_SRC=".build/checkouts/mlx-swift/Source/Cmlx/mlx"
+          fi
+          mkdir -p .build/metallib_build
+          pushd .build/metallib_build
+          cmake "../../$MLX_SRC" \
+            -DMLX_BUILD_TESTS=OFF \
+            -DMLX_BUILD_EXAMPLES=OFF \
+            -DMLX_BUILD_BENCHMARKS=OFF \
+            -DMLX_BUILD_PYTHON_BINDINGS=OFF \
+            -DMLX_METAL_JIT=OFF \
+            -DMLX_ENABLE_NAX=1 \
+            -DCMAKE_BUILD_TYPE=Release 2>&1 | tail -20
+          make mlx-metallib -j$(sysctl -n hw.ncpu) 2>&1 | tail -20
+          popd
+          BUILT=$(find .build/metallib_build -name "mlx.metallib" | head -1)
+          cp "$BUILT" .build/release/mlx.metallib
+          # Install hf for model pre-download
           python3 -m venv /tmp/mlx_venv
-          source /tmp/mlx_venv/bin/activate
-          pip install --upgrade pip setuptools wheel pybind11 cmake huggingface_hub
-          cd .build/checkouts/mlx-swift/Source/Cmlx/mlx
-          python setup.py build_ext --inplace
-          cp build/lib.*/mlx/lib/mlx.metallib ../../../../../../.build/release/mlx.metallib
+          /tmp/mlx_venv/bin/pip install --quiet huggingface_hub hf
 
       - name: Cache MLX models (draft + main)
         uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
-          key: mlx-speculative-qwen35-0.8b-9b
+          key: mlx-speculative-qwen35-2b-0.8b
 
       - name: Pre-download HuggingFace models
         run: |
           source /tmp/mlx_venv/bin/activate
-          huggingface-cli download mlx-community/Qwen3.5-9B-4bit || true
-          huggingface-cli download mlx-community/Qwen3.5-0.8B-MLX-4bit || true
+          hf download mlx-community/Qwen3.5-2B-4bit || true
+          hf download mlx-community/Qwen3.5-0.8B-MLX-4bit || true
 
       - name: Run speculative decoding E2E
         env:
@@ -217,9 +234,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .build
-          key: ${{ runner.os }}-spm-SwiftLM-v2-${{ hashFiles('Package.resolved') }}
+          key: ${{ runner.os }}-spm-SwiftLM-v3-${{ hashFiles('Package.resolved') }}
           restore-keys: |
-            ${{ runner.os }}-spm-SwiftLM-v2-
+            ${{ runner.os }}-spm-SwiftLM-v3-
 
       - name: Clear stale module cache
         run: find .build -type d -name ModuleCache -exec rm -rf {} + 2>/dev/null || true
@@ -232,23 +249,48 @@ jobs:
       
       - name: Compile and install custom MLX Metal library
         run: |
+          # cmake-based build from SharpAI fork — mirrors build.sh (PR #58)
+          if [ -d "mlx-swift/Source/Cmlx/mlx" ]; then
+            MLX_SRC="mlx-swift/Source/Cmlx/mlx"
+          else
+            MLX_SRC=".build/checkouts/mlx-swift/Source/Cmlx/mlx"
+          fi
+          mkdir -p .build/metallib_build
+          pushd .build/metallib_build
+          cmake "../../$MLX_SRC" \
+            -DMLX_BUILD_TESTS=OFF \
+            -DMLX_BUILD_EXAMPLES=OFF \
+            -DMLX_BUILD_BENCHMARKS=OFF \
+            -DMLX_BUILD_PYTHON_BINDINGS=OFF \
+            -DMLX_METAL_JIT=OFF \
+            -DMLX_ENABLE_NAX=1 \
+            -DCMAKE_BUILD_TYPE=Release 2>&1 | tail -20
+          make mlx-metallib -j$(sysctl -n hw.ncpu) 2>&1 | tail -20
+          popd
+          BUILT=$(find .build/metallib_build -name "mlx.metallib" | head -1)
+          cp "$BUILT" .build/release/mlx.metallib
+          # Install hf for model pre-download
           python3 -m venv /tmp/mlx_venv
-          source /tmp/mlx_venv/bin/activate
-          pip install --upgrade pip setuptools wheel pybind11 cmake huggingface_hub
-          cd .build/checkouts/mlx-swift/Source/Cmlx/mlx
-          python setup.py build_ext --inplace
-          cp build/lib.*/mlx/lib/mlx.metallib ../../../../../../.build/release/mlx.metallib
+          /tmp/mlx_venv/bin/pip install --quiet huggingface_hub hf
+
+      - name: Cache MLX models (draft + 9B)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: mlx-speculative-eval-qwen35-2b-0.8b
 
       - name: Pre-download HuggingFace models
         run: |
           source /tmp/mlx_venv/bin/activate
-          huggingface-cli download mlx-community/Qwen3.5-9B-4bit || true
-          huggingface-cli download mlx-community/Qwen3.5-0.8B-MLX-4bit || true
+          hf download mlx-community/Qwen3.5-2B-4bit || true
+          hf download mlx-community/Qwen3.5-0.8B-MLX-4bit || true
       
       - name: Run speculative evaluation E2E
         env:
           HF_HUB_DOWNLOAD_TIMEOUT: "900"
           SWIFTLM_TOP_K: "2"
+          MAIN_MODEL: "mlx-community/Qwen3.5-2B-4bit"
+          NUM_DRAFT_TOKENS: "2"
         run: |
           chmod +x tests/test-speculative-eval.sh
           for attempt in 1 2 3; do
