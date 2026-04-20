@@ -1,7 +1,13 @@
 #!/bin/bash
 set -eo pipefail
 
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+# Safely append Homebrew bins to PATH if they exist, to avoid overriding custom toolchains
+if [[ ":$PATH:" != *":/opt/homebrew/bin:"* ]] && [ -d "/opt/homebrew/bin" ]; then
+    export PATH="$PATH:/opt/homebrew/bin"
+fi
+if [[ ":$PATH:" != *":/usr/local/bin:"* ]] && [ -d "/usr/local/bin" ]; then
+    export PATH="$PATH:/usr/local/bin"
+fi
 
 echo "=============================================="
 echo "    SwiftLM Build Script                      "
