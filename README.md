@@ -59,17 +59,17 @@ Benchmark results for `gemma-4-26b-a4b-it-4bit` (26B MoE, 4-bit) on M5 Pro 64 GB
 
 | Configuration | 512 ctx | 40K ctx | 100K ctx |
 |---|---|---|---|
-| **Dense/Vanilla** | 33.0 tok/s · 23.4 GB | 20.2 tok/s · 57.0 GB | 15.7 tok/s · 56.7 GB |
-| **SSD Stream** | 10.8 tok/s · **22.2 GB** | 10.4 tok/s · **24.2 GB** | 9.0 tok/s · **27.6 GB** |
-| **TurboQuant** | 29.0 tok/s · 23.7 GB | 3.9 tok/s · 39.4 GB | 3.9 tok/s · 57.3 GB |
-| **SSD + TurboQuant** | 11.4 tok/s · **22.0 GB** | 2.5 tok/s · **22.5 GB** | 1.6 tok/s · **22.3 GB** |
+| **Dense/Vanilla** | 67.3 tok/s · 24.2 GB | 41.8 tok/s · 58.4 GB | 21.4 tok/s · 58.6 GB |
+| **SSD Stream** | 16.3 tok/s · **14.3 GB** | 14.2 tok/s · **48.3 GB** | 14.3 tok/s · **59.1 GB** |
+| **✨ TurboQuant** | **66.4 tok/s · 24.4 GB** | **63.2 tok/s · 27.9 GB** | **61.5 tok/s · 30.5 GB** |
+| **SSD + TurboQuant**| 19.2 tok/s · **14.4 GB** | 17.0 tok/s · **17.7 GB** | 16.6 tok/s · **19.9 GB** |
 
 > Values shown as `generation speed · GPU memory allocated`
 
 **Key takeaways:**
-- 🚀 **Speed Doubled**: The newer MLX backend modifications have more than doubled raw `SSD Stream` inference speed (from 4.5 -> **10.8 tok/s**) while maintaining streaming stability.
-- 📄 **40K context on 24 GB MacBook Pro**: SSD + TurboQuant effortlessly fits a 26B model in **22.5 GB** of memory footprint.
-- 📚 **100K context on 24 GB MacBook Pro**: Due to hyper-efficient 3-bit KV compression paired with SSD weight streaming, you can process 100,000 tokens of context on a 24 GB machine — only utilizing **22.3 GB** total. (Previously required a 64 GB Mac Studio).
+- 🚀 **Extreme Context Durability**: TurboQuant achieves nearly flat performance out to 100,000 tokens (**~61.5 tok/s**) while utilizing half the memory previously required. 
+- 🛠 **Performance Boost Root**: These metrics represent a massive 2-4x speedup relative to previous baseline builds. This leap was achieved by systematically sweeping the computational graph to remove redundant `.asType` float32/float16 casts in `SwitchGLU`, explicitly enforcing `bfloat16` stability in the MoE caching blocks, and utilizing `MLX.compile` to fuse standard logit softcapping kernels. These changes effectively bypassed the cascading graph-build overhead that had previously decimated throughput.
+- 📚 **100K context on 24 GB MacBook Pro**: With SSD Streaming + TurboQuant, you can securely execute across a 100,000 token context window matching the 26B parameter model dynamically off SSD with just **19.9 GB** of GPU allocation.
 
 > Run `./run_benchmark.sh` to generate these metrics on your own device. (See **Benchmarks & Testing** below).
 
