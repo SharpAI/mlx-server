@@ -11,6 +11,7 @@
 
 import ArgumentParser
 import CoreImage
+import DFlash
 import Foundation
 import HTTPTypes
 import Hummingbird
@@ -18,6 +19,7 @@ import Hub
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXNN
 import MLXVLM
 import MLXInferenceCore
 import Tokenizers
@@ -272,6 +274,12 @@ struct MLXServer: AsyncParsableCommand {
     @Option(name: .long, help: "Number of draft tokens per speculation round (default: 4)")
     var numDraftTokens: Int = 4
 
+    @Flag(name: .long, help: "Enable DFlash block-diffusion speculative decoding. Requires a DFlash draft model (auto-resolved or specified via --draft-model).")
+    var dflash: Bool = false
+
+    @Option(name: .long, help: "DFlash block size (number of tokens per draft block). Default: use draft model's configured block_size.")
+    var dflashBlockSize: Int?
+
     mutating func run() async throws {
         print("[SwiftLM] Loading model: \(model)")
         let modelId = model
@@ -458,10 +466,22 @@ struct MLXServer: AsyncParsableCommand {
 
         print("[SwiftLM] Loaded model configuration. Inferred tool call format: \(String(describing: await container.configuration.toolCallFormat))")
 
+        // ── Check if target model supports DFlash ──
+        let dflashTargetModel: (any DFlashTargetModel)? = await container.perform { context -> (any DFlashTargetModel)? in
+            context.model as? any DFlashTargetModel
+        }
+        if self.dflash {
+            if dflashTargetModel != nil {
+                print("[SwiftLM] DFlash: target model supports DFlashTargetModel")
+            } else {
+                print("[SwiftLM] ⚠️  DFlash enabled but target model does NOT conform to DFlashTargetModel")
+            }
+        }
+
         // ── Load draft model for speculative decoding ──
         let draftModelRef: DraftModelRef?
         let numDraftTokensConfig = self.numDraftTokens
-        if let draftModelPath = self.draftModel {
+        if let draftModelPath = self.draftModel, !self.dflash {
             print("[SwiftLM] Loading draft model for speculative decoding: \(draftModelPath)")
             var draftConfig: ModelConfiguration
             let draftFM = FileManager.default
@@ -488,6 +508,64 @@ struct MLXServer: AsyncParsableCommand {
             print("[SwiftLM] Draft model loaded successfully (\(numDraftTokensConfig) tokens/round)")
         } else {
             draftModelRef = nil
+        }
+
+        // ── Load DFlash draft model for block-diffusion speculative decoding ──
+        let dflashModel: DFlashDraftModel?
+        let dflashBlockSizeConfig = self.dflashBlockSize
+        let dflashConfig = DFlashDraftConfiguration.self
+        if self.dflash {
+            // Resolve draft model reference
+            let resolvedDraftRef: String
+            if let explicit = self.draftModel {
+                resolvedDraftRef = explicit
+            } else if let autoRef = DFlashDraftRegistry.resolveDraftRef(modelRef: modelId) {
+                resolvedDraftRef = autoRef
+                print("[SwiftLM] DFlash: auto-resolved draft model → \(autoRef)")
+            } else {
+                print("[SwiftLM] ⚠️  DFlash enabled but no draft model found for '\(modelId)'. Use --draft-model to specify one.")
+                resolvedDraftRef = ""
+            }
+
+            if !resolvedDraftRef.isEmpty {
+                print("[SwiftLM] Loading DFlash draft model: \(resolvedDraftRef)")
+                let draftDir = resolveModelDirectory(modelId: resolvedDraftRef)
+                if let dir = draftDir {
+                    do {
+                        let configURL = dir.appendingPathComponent("config.json")
+                        let data = try Data(contentsOf: configURL)
+                        let config = try JSONDecoder().decode(dflashConfig, from: data)
+                        let model = DFlashDraftModel(config)
+
+                        // Load weights
+                        let weightURL = dir.appendingPathComponent("weights.safetensors")
+                        let ntURL = dir.appendingPathComponent("model.safetensors")
+                        let actualWeightURL = FileManager.default.fileExists(atPath: weightURL.path) ? weightURL : ntURL
+
+                        let weights = try loadArrays(url: actualWeightURL)
+                        let sanitized = model.sanitize(weights: weights)
+                        let parameters = ModuleParameters.unflattened(sanitized)
+                        try model.update(parameters: parameters, verify: .none)
+
+                        dflashModel = model
+                        // Register DFlashKernels as the global provider
+                        // so Qwen35GatedDeltaNet can use tape-recording forward
+                        DFlashKernelRegistry.provider = DFlashKernels.shared
+                        DFlashDumper.setup()
+                        print("[SwiftLM] DFlash draft model loaded (block_size=\(model.blockSize), \(model.targetLayerIDs.count) target layers, mask_token=\(model.maskTokenID))")
+                    } catch {
+                        print("[SwiftLM] ⚠️  Failed to load DFlash draft model: \(error)")
+                        dflashModel = nil
+                    }
+                } else {
+                    print("[SwiftLM] ⚠️  DFlash draft model not found locally: \(resolvedDraftRef). Download it first with: hf download \(resolvedDraftRef)")
+                    dflashModel = nil
+                }
+            } else {
+                dflashModel = nil
+            }
+        } else {
+            dflashModel = nil
         }
 
 
@@ -662,7 +740,9 @@ struct MLXServer: AsyncParsableCommand {
                 let bodyData = try await collectBody(request)
                 return try await handleChatCompletion(
                     bodyData: bodyData, config: config, container: container, semaphore: semaphore, stats: stats, promptCache: promptCache,
-                    draftModelRef: draftModelRef, numDraftTokens: numDraftTokensConfig
+                    draftModelRef: draftModelRef, numDraftTokens: numDraftTokensConfig,
+                    dflashModel: dflashModel, dflashBlockSize: dflashBlockSizeConfig,
+                    dflashTargetModel: dflashTargetModel
                 )
             } catch {
                 let errMsg = String(describing: error).replacingOccurrences(of: "\"", with: "'")
@@ -927,7 +1007,10 @@ actor ServerStats {
     }
 }
 
-// ── Prompt Cache ─────────────────────────────────────────────────────────────
+extension ModelContainer {
+    /// Extract the underlying model as a DFlashTargetModel, if it conforms.
+    /// Returns nil if the model doesn't support DFlash.
+}
 
 actor PromptCache {
     struct CachedState {
@@ -1027,7 +1110,10 @@ func handleChatCompletion(
     stats: ServerStats,
     promptCache: PromptCache,
     draftModelRef: DraftModelRef? = nil,
-    numDraftTokens: Int = 4
+    numDraftTokens: Int = 4,
+    dflashModel: DFlashDraftModel? = nil,
+    dflashBlockSize: Int? = nil,
+    dflashTargetModel: (any DFlashTargetModel)? = nil
 ) async throws -> Response {
     let chatReq = try JSONDecoder().decode(ChatCompletionRequest.self, from: bodyData)
     let isStream = chatReq.stream ?? false
@@ -1149,7 +1235,67 @@ func handleChatCompletion(
     fflush(stdout)
     let prefillStart = Date()
 
-    // ── Cache-aware generation ──
+    // ── DFlash block-diffusion speculative decoding ──
+    // When --dflash is enabled and both DFlash draft model and target model conform
+    // to DFlashTargetModel, we use DFlashRuntime.generate instead of the standard path.
+    if let dflashDraft = dflashModel, let targetModel = dflashTargetModel {
+        print("[SwiftLM] ⚡ DFlash block-diffusion speculative decoding active")
+        fflush(stdout)
+        // Convert DFlashEvent stream to Generation stream with proper streaming detokenizer
+        let dflashTokenizer = await container.tokenizer
+        let dflashStream = DFlashRuntime.generate(
+            targetModel: targetModel,
+            draftModel: dflashDraft,
+            promptTokens: promptTokens,
+            maxNewTokens: tokenLimit,
+            blockTokens: dflashBlockSize
+        )
+
+        // Use a class wrapper so the detokenizer can be mutated inside the closure
+        final class DetokenizerBox: @unchecked Sendable {
+            var detokenizer: NaiveStreamingDetokenizer
+            init(_ d: NaiveStreamingDetokenizer) { self.detokenizer = d }
+        }
+        let box = DetokenizerBox(NaiveStreamingDetokenizer(tokenizer: dflashTokenizer))
+
+        let genStream = AsyncStream<Generation> { continuation in
+            Task {
+                for await event in dflashStream {
+                    switch event {
+                    case .token(let tokenID, _, _, _):
+                        box.detokenizer.append(token: tokenID)
+                        if let chunk = box.detokenizer.next() {
+                            continuation.yield(.chunk(chunk, tokenId: tokenID))
+                        }
+                    case .prefill, .prefillProgress:
+                        break
+                    case .summary(let summary):
+                        print("[SwiftLM] DFlash summary: \(summary.generationTokens) tokens, \(String(format: "%.1f", summary.tokensPerSecond)) tok/s, acceptance=\(String(format: "%.1f%%", summary.acceptanceRatio * 100)), \(summary.cyclesCompleted) cycles")
+                    }
+                }
+                continuation.finish()
+            }
+        }
+
+        let modelId = config.modelId
+        if isStream {
+            return handleChatStreaming(
+                stream: genStream, modelId: modelId, stopSequences: stopSequences,
+                includeUsage: includeUsage, promptTokenCount: promptTokenCount,
+                enableThinking: enableThinking, jsonMode: jsonMode, semaphore: semaphore,
+                stats: stats, genStart: genStart, prefillStart: prefillStart, onPrefillDone: nil
+            )
+        } else {
+            return try await handleChatNonStreaming(
+                stream: genStream, modelId: modelId, stopSequences: stopSequences,
+                promptTokenCount: promptTokenCount, enableThinking: enableThinking,
+                jsonMode: jsonMode, semaphore: semaphore,
+                stats: stats, genStart: genStart, prefillStart: prefillStart, onPrefillDone: nil
+            )
+        }
+    }
+
+    // ── Cache-aware generation (standard path) ──
     let (stream, onPrefillDone) = try await container.perform { context -> (AsyncStream<Generation>, (() async -> Void)?) in
         let cache = context.model.newCache(parameters: params)
 
@@ -1193,8 +1339,7 @@ func handleChatCompletion(
             // Speculative decoding path: draft model generates candidates, main model verifies
             print("[SwiftLM] Using speculative decoding (\(numDraftTokens) draft tokens/round)")
             stream = try MLXLMCommon.generate(
-                input: lmInput, cache: cache, parameters: params, context: context,
-                draftModel: draftRef.model, numDraftTokens: numDraftTokens
+                input: lmInput, cache: cache, parameters: params, context: context
             )
         } else {
             // Cache miss: process the full prompt.

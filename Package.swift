@@ -6,6 +6,7 @@ let package = Package(
     platforms: [.macOS(.v14), .iOS(.v17)],
     products: [
         .library(name: "MLXInferenceCore", targets: ["MLXInferenceCore"]),
+        .library(name: "DFlash", targets: ["DFlash"]),
         .executable(name: "SwiftLM", targets: ["SwiftLM"]),
         .executable(name: "SwiftBuddy", targets: ["SwiftBuddy"])
     ],
@@ -29,6 +30,7 @@ let package = Package(
             name: "SwiftLM",
             dependencies: [
                 "MLXInferenceCore",
+                "DFlash",
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "MLXVLM", package: "mlx-swift-lm"),
@@ -85,6 +87,16 @@ let package = Package(
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency")
             ]
+        ),
+        // ── DFlash Speculative Decoding ─────────────────────────────
+        .target(
+            name: "DFlash",
+            dependencies: [
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+            ],
+            path: "Sources/DFlash"
         ),
         // ── Automated Test Harness ──────────────────────────────────
         .testTarget(

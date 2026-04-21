@@ -28,3 +28,6 @@ tmp/
 .agents/harness/audio-omni-gemma4/runs/
 .venv/
 mem-palace/
+
+
+tests/DFlashComparison/intermediates/
