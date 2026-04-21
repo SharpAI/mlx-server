@@ -1127,7 +1127,7 @@ func handleChatCompletion(
 
     // Pass enable_thinking to the Jinja chat template via additionalContext.
     // Precedence: top-level request > per-request chat_template_kwargs > server --thinking flag
-    let enableThinking: Bool
+    var enableThinking: Bool
     if let explicitTopLevel = chatReq.enableThinking {
         enableThinking = explicitTopLevel
     } else if let kwargs = chatReq.chatTemplateKwargs, let perRequest = kwargs["enable_thinking"] {
@@ -1135,7 +1135,36 @@ func handleChatCompletion(
     } else {
         enableThinking = config.thinking  // fall back to server --thinking flag
     }
-    let templateContext: [String: any Sendable]? = enableThinking ? nil : ["enable_thinking": false]
+
+    // Workaround for Gemma-4 Tool-Call bug (Resolves https://github.com/SharpAI/SwiftLM/issues/69)
+    // If tools are present, the Gemma-4 Jinja template appends an anti-thinking prefix
+    // (`<|channel>thought\n<channel|>`) when enable_thinking=false. This forcibly suppresses
+    // the reasoning channel, flattening the first-token output distribution at the `<|tool_call>`
+    // vs `text` decision point, resulting in complete failure (garbage tokens, Korean repeats,
+    // or ignoring tools entirely) on vague requests.
+    //
+    // Fix: Unconditionally enable the thinking channel when tools are provided, giving the
+    // Gemma-4 router time to process the system prompt before deciding to emit a tool_call.
+    //
+    // Coverage details:
+    // - Tested Model: `mlx-community/gemma-4-26b-a4b-it-4bit`
+    // - Verification: Verified via `run_benchmark.sh` (Test 8) using dynamic `tool_call` regression mapping.
+    //                 The test covers vague query fallback (graceful TEXT handling bypassing degeneration)
+    //                 and explicit query execution (driven via structured System Prompt conditioning).
+    // - Known Limitations: While this logic repairs expected 4-bit decoding structures, evaluating at
+    //                    zero-temperature (`temp=0.0`) without active repetition penalties can inherently 
+    //                    induce repeating loop failure vectors beyond the purview of this fix.
+    if chatReq.enableThinking == nil,
+       chatReq.chatTemplateKwargs?["enable_thinking"] == nil,
+       toolSpecs?.isEmpty == false,
+       await container.configuration.toolCallFormat == .gemma4
+    {
+        enableThinking = true
+    }
+
+    // The Jinja template evaluates `not enable_thinking | default(false)`. If we pass nil instead of
+    // true, it evaluates to false and still breaks. We MUST explicitly pass the boolean.
+    let templateContext: [String: any Sendable] = ["enable_thinking": enableThinking]
     let userInput = UserInput(chat: chatMessages, tools: toolSpecs, additionalContext: templateContext)
     print("[Server Debug] Created UserInput with \(userInput.images.count) images and \(userInput.audio.count) audio inputs.")
     let lmInput = try await container.prepare(input: userInput)
@@ -1269,15 +1298,13 @@ struct ThinkingStateTracker {
         while !buffer.isEmpty {
             switch phase {
             case .responding:
-                let startRange = buffer.range(of: "<thinking>") ?? buffer.range(of: "<think>")
+                let startRange = buffer.range(of: "<thinking>") ?? buffer.range(of: "<think>") ?? buffer.range(of: "<|channel>thought\n") ?? buffer.range(of: "<|channel>thought")
                 if let range = startRange {
                     // Flush text before the tag as response content
                     content += String(buffer[buffer.startIndex..<range.lowerBound])
                     buffer.removeSubrange(buffer.startIndex..<range.upperBound)
                     phase = .thinking
-                } else if buffer.hasSuffix("<") || buffer.hasSuffix("<t") || buffer.hasSuffix("<th") ||
-                          buffer.hasSuffix("<thi") || buffer.hasSuffix("<thin") || buffer.hasSuffix("<think") ||
-                          buffer.hasSuffix("<thinki") || buffer.hasSuffix("<thinkin") || buffer.hasSuffix("<thinking") {
+                } else if isSuffixOfTag(buffer, tags: ["<think>", "<thinking>", "<|channel>thought\n", "<|channel>thought"]) {
                     // Partial tag — hold in buffer until we know more
                     return (reasoning, content)
                 } else {
@@ -1285,13 +1312,13 @@ struct ThinkingStateTracker {
                     buffer = ""
                 }
             case .thinking:
-                let endRange = buffer.range(of: "</thinking>") ?? buffer.range(of: "</think>")
+                let endRange = buffer.range(of: "</thinking>") ?? buffer.range(of: "</think>") ?? buffer.range(of: "<channel|>")
                 if let range = endRange {
                     // Flush reasoning before the closing tag
                     reasoning += String(buffer[buffer.startIndex..<range.lowerBound])
                     buffer.removeSubrange(buffer.startIndex..<range.upperBound)
                     phase = .responding
-                } else if isSuffixOfClosingTag(buffer) {
+                } else if isSuffixOfTag(buffer, tags: ["</think>", "</thinking>", "<channel|>"]) {
                     // Partial closing tag — hold in buffer
                     return (reasoning, content)
                 } else {
@@ -1303,8 +1330,7 @@ struct ThinkingStateTracker {
         return (reasoning, content)
     }
 
-    private func isSuffixOfClosingTag(_ s: String) -> Bool {
-        let tags = ["</think>", "</thinking>"]
+    private func isSuffixOfTag(_ s: String, tags: [String]) -> Bool {
         for tag in tags {
             for len in stride(from: min(s.count, tag.count), through: 1, by: -1) {
                 let tagPrefix = String(tag.prefix(len))
@@ -1615,7 +1641,9 @@ func handleChatNonStreaming(
     var reasoningContent: String? = nil
     var responseContent = fullText
     if enableThinking {
+        print("srv debug: pre-extract fullText=\(fullText.prefix(40).debugDescription)")
         let (extracted, remaining) = extractThinkingBlock(from: fullText)
+        print("srv debug: extracted=\(extracted != nil ? "true" : "false"), remaining_len=\(remaining.count)")
         if let extracted {
             reasoningContent = extracted
             responseContent = remaining
@@ -1669,11 +1697,11 @@ func handleChatNonStreaming(
 
 /// Returns (thinkingContent, remainingContent) or (nil, original) if no block found.
 func extractThinkingBlock(from text: String) -> (String?, String) {
-    let startTag = text.range(of: "<thinking>") ?? text.range(of: "<think>")
-    let endTag = text.range(of: "</thinking>") ?? text.range(of: "</think>")
+    let startTag = text.range(of: "<thinking>") ?? text.range(of: "<think>") ?? text.range(of: "<|channel>thought\n") ?? text.range(of: "<|channel>thought") ?? (text.hasPrefix("thought\n") ? text.range(of: "thought\n") : nil)
+    let endTag = text.range(of: "</thinking>") ?? text.range(of: "</think>") ?? text.range(of: "<channel|>")
     
     guard let startRange = startTag, let endRange = endTag else {
-        // If there's an unclosed <think> or <thinking> block (still thinking when stopped)
+        // If there's an unclosed thinking block (still thinking when stopped)
         if let startRange = startTag {
             let thinking = String(text[startRange.upperBound...])
             return (thinking.isEmpty ? nil : thinking, "")

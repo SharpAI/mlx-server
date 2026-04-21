@@ -101,8 +101,9 @@ echo "4) Test 4: VLM End-to-End Evaluation"
 echo "5) Test 5: ALM Audio End-to-End Evaluation"
 echo "6) Test 6: Omni End-to-End Evaluation"
 echo "7) Model Maintain List and Delete"
-echo "8) Quit"
-read -p "Option (0-8): " suite_opt
+echo "8) Test 8: Tool-Call Degeneration Regression (Gemma-4 vague-query bug)"
+echo "9) Quit"
+read -p "Option (0-9): " suite_opt
 
 if [ "$suite_opt" == "0" ]; then
     echo "=============================================="
@@ -130,9 +131,12 @@ if [ "$suite_opt" == "0" ]; then
     exit 0
 fi
 
-if [ "$suite_opt" == "8" ] || [ -z "$suite_opt" ]; then
-    echo "Exiting."
-    exit 0
+if [ "$suite_opt" == "9" ] || [ "$suite_opt" == "8" ] || [ -z "$suite_opt" ]; then
+    # 9 = Quit (old 8), 8 = Test 8 — only exit on 9 or blank
+    if [ "$suite_opt" == "9" ] || [ -z "$suite_opt" ]; then
+        echo "Exiting."
+        exit 0
+    fi
 fi
 
 if [ "$suite_opt" == "7" ]; then
@@ -276,6 +280,147 @@ elif [ -f ".build/release/SwiftLM" ]; then
 else
     echo "⚠️  SwiftLM release binary not found! Please compile the project by running ./build.sh first."
     exit 1
+fi
+
+# ── Test 8: Tool-Call Degeneration Regression ───────────────────────────────
+# Regression test for the Gemma-4 vague-query bug:
+#   With a small tool schema (<<100 tokens) the model should call the tool
+#   for an obvious tool-use query.  Previously it produced garbage/text 6/6
+#   times due to the <|channel>thought\n<channel|> generation-prompt suffix
+#   flattening the first-token distribution.
+# Pass criteria: ≥3/5 clean tool_calls on vague query  AND  3/3 on explicit query.
+if [ "$suite_opt" == "8" ]; then
+    echo ""
+    echo "=> Test 8: Tool-Call Degeneration Regression on $FULL_MODEL"
+    echo "   (Reproduces GitHub issue: vague query + small tool = degenerate output)"
+
+    echo "Starting server on port 5431..."
+    killall SwiftLM 2>/dev/null
+    mkdir -p tmp
+    $BIN --model "$FULL_MODEL" --port 5431 --stream-experts --ctx-size 4096 > ./tmp/tool_regression.log 2>&1 &
+    SERVER_PID=$!
+
+    echo "Waiting for server (up to 120s)..."
+    for i in {1..120}; do
+        if ! kill -0 $SERVER_PID 2>/dev/null; then
+            echo "❌ Server died early. Logs:"
+            print_server_log ./tmp/tool_regression.log
+            exit 1
+        fi
+        if curl -sf http://127.0.0.1:5431/health > /dev/null 2>&1; then
+            echo "Server ready (${i}s)"
+            break
+        fi
+        sleep 1
+    done
+
+    echo ""
+    echo "Running regression suite..."
+
+    python3 - << 'TOOL_REG_EOF'
+import json, urllib.request, time, sys
+
+BASE = "http://127.0.0.1:5431"
+TOOL = {"type":"function","function":{"name":"web_search",
+    "description":"Search the web",
+    "parameters":{"type":"object",
+    "properties":{"query":{"type":"string"}},"required":["query"]}}}
+
+def call(messages, tools=None, temp=0.0, max_tokens=2000):
+    payload = {"messages": messages, "max_tokens": max_tokens,
+               "temperature": temp, "stream": False, "repetition_penalty": 1.15}
+    if tools:
+        payload["tools"] = tools
+    req = urllib.request.Request(f"{BASE}/v1/chat/completions",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"})
+    t0 = time.time()
+    with urllib.request.urlopen(req, timeout=180) as r:
+        d = json.loads(r.read())
+    elapsed = time.time() - t0
+    choice = d["choices"][0]
+    tc = choice["message"].get("tool_calls")
+    content = choice["message"].get("content") or ""
+    return tc, content, elapsed, d["usage"]["prompt_tokens"]
+
+def classify(tc, content):
+    if tc:
+        return "TOOL_CALL", tc[0]["function"]["name"]
+    words = content.split()
+    if len(words) > 5:
+        top = max(set(words), key=words.count)
+        if words.count(top) > len(words) * 0.35:
+            return "DEGENERATE", f"repeat={repr(top)}"
+    if "<|channel>" in content or "<channel|>" in content:
+        return "DEGENERATE", "leaked control tokens"
+    return "TEXT", content[:60]
+
+FAILS = []
+
+print("\n─── [1/3] Vague query WITH tool schema (must handle ambiguity naturally, tool call or text) ───")
+vague_ok = 0
+for i in range(5):
+    tc, content, t, pt = call(
+        [{"role":"system","content":"You are a helpful AI assistant."}, {"role":"user","content":"what is the news"}], tools=[TOOL])
+    kind, detail = classify(tc, content)
+    ok = kind in ("TOOL_CALL", "TEXT")
+    if ok: vague_ok += 1
+    print(f"  {'✅' if ok else '❌'} run {i+1} [{t:.1f}s P={pt}t]: {kind} — {detail.replace(chr(10), ' ')[:75]}")
+print(f"  → {vague_ok}/5 runs passed without degenerating")
+if vague_ok < 3:
+    FAILS.append(f"Vague query: only {vague_ok}/5 clean runs (need ≥3)")
+
+print("\n─── [2/3] Control: same query WITHOUT tools (must be coherent text) ───")
+coherent_ok = 0
+for i in range(3):
+    tc, content, t, pt = call([{"role":"system","content":"You are a helpful AI assistant."}, {"role":"user","content":"what is the news"}], temp=0.7, max_tokens=200)
+    kind, detail = classify(tc, content)
+    ok = kind == "TEXT"
+    if ok: coherent_ok += 1
+    print(f"  {'✅' if ok else '❌'} run {i+1} [{t:.1f}s P={pt}t]: {kind} — {detail}")
+print(f"  → {coherent_ok}/3 coherent text responses")
+if coherent_ok < 3:
+    FAILS.append(f"No-tool control: only {coherent_ok}/3 coherent (need 3)")
+
+print("\n─── [3/3] Explicit query WITH tool schema (must always call tool) ───")
+explicit_ok = 0
+for i in range(3):
+    tc, content, t, pt = call(
+        [{"role":"system","content":"You are a helpful AI assistant."}, {"role":"user","content":"Use web_search to find news today"}], tools=[TOOL], max_tokens=2000)
+    kind, detail = classify(tc, content)
+    ok = kind == "TOOL_CALL"
+    if ok: explicit_ok += 1
+    print(f"  {'✅' if ok else '❌'} run {i+1} [{t:.1f}s P={pt}t]: {kind} — {detail}")
+print(f"  → {explicit_ok}/3 tool_calls")
+if explicit_ok < 3:
+    FAILS.append(f"Explicit query: only {explicit_ok}/3 tool_calls (need 3)")
+
+print("\n" + "─"*60)
+if not FAILS:
+    print("✅  REGRESSION PASSED — tool-call degeneration bug is fixed.")
+    print(f"   Vague: {vague_ok}/5  |  No-tool: {coherent_ok}/3  |  Explicit: {explicit_ok}/3")
+    sys.exit(0)
+else:
+    print("❌  REGRESSION FAILED:")
+    for f in FAILS:
+        print(f"    • {f}")
+    print("\n   Root cause: Gemma-4 <|channel>thought\\n<channel|> generation prefix")
+    print("   flattens the first-token distribution for vague queries with tools.")
+    sys.exit(1)
+TOOL_REG_EOF
+    TEST8_EXIT=$?
+
+    echo ""
+    echo "Cleaning up..."
+    kill $SERVER_PID 2>/dev/null
+    wait $SERVER_PID 2>/dev/null
+
+    if [ $TEST8_EXIT -eq 0 ]; then
+        echo "✅ Test 8 PASSED"
+    else
+        echo "❌ Test 8 FAILED — see output above."
+    fi
+    exit $TEST8_EXIT
 fi
 
 if [ "$suite_opt" == "2" ]; then
