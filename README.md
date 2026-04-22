@@ -352,9 +352,45 @@ curl http://localhost:5413/v1/chat/completions \
 | `--min-p` | `0.0` | Default min-p sampling threshold relative to the highest probability token (0 disables) |
 | `--gpu-layers` | `model_default`| Restrict the amount of layers allocated to GPU hardware |
 | `--stream-experts` | `false` | Enable SSD expert streaming for MoE models (10x speedup) |
-| `--turbo-kv` | `false` | Enable TurboQuant 3-bit KV cache compression |
+| `--turbo-kv` | `false` | Enable TurboQuant 3-bit KV cache compression (activates after 2048 tokens, server-wide) |
 | `--draft-model` | (none) | Draft model path/ID for speculative decoding (in-RAM models only) |
 | `--num-draft-tokens` | `4` | Number of draft tokens per speculation round |
+
+## 🔧 Per-Request API Parameters
+
+In addition to the standard OpenAI fields (`temperature`, `top_p`, `max_tokens`, etc.), SwiftLM accepts the following **SwiftLM-specific** fields on `POST /v1/chat/completions`:
+
+| Field | Type | Description |
+|---|---|---|
+| `kv_bits` | `int` (4 or 8) | Enable **MLX-native quantized KV cache** for this request. Uses `QuantizedKVCache` (standard group quantization) instead of `KVCacheSimple`. Separate from `--turbo-kv`. Reduces KV memory ~2–4× at mild quality cost. |
+| `enable_thinking` | `bool` | Force-enable or disable chain-of-thought thinking blocks for Gemma-4 / Qwen3. |
+| `kv_group_size` | `int` | Group size for `kv_bits` quantization (default: `64`). |
+| `top_k` | `int` | Per-request top-k sampling override (0 = disabled). |
+| `min_p` | `float` | Per-request min-p sampling threshold (0 = disabled). |
+| `repetition_penalty` | `float` | Token repetition penalty (e.g. `1.15`). |
+
+### `kv_bits` vs `--turbo-kv` — What's the difference?
+
+| | `kv_bits` (per-request) | `--turbo-kv` (server flag) |
+|---|---|---|
+| **Scope** | Per-request, sent in JSON body | Server-wide, set at startup |
+| **Algorithm** | MLX-native group quantization (4-bit / 8-bit) | Custom 3-bit PolarQuant + QJL Walsh-Hadamard |
+| **Activation** | From token 0 | After 2048 tokens |
+| **Memory savings** | ~2–4× vs FP16 | ~3.5× vs FP16 |
+| **Use case** | Targeted memory reduction per conversation | Extreme long-context (100K+) compression |
+
+### Example: Enable 4-bit KV cache per request
+```bash
+curl http://localhost:5413/v1/chat/completions \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "gemma-4-26b-a4b-it-4bit",
+    "kv_bits": 4,
+    "messages": [
+      {"role": "user", "content": "Summarize the history of computing in 3 sentences."}
+    ]
+  }'
+```
 
 ## 📦 Requirements
 

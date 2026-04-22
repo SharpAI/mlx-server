@@ -978,9 +978,10 @@ fi
 # crash fixed in PR #29 of mlx-swift-lm.
 #
 # Pass criteria:
-#   - 4-bit run: prefill + ≥20 decode tokens, response is non-empty coherent text
+#   - 4-bit run: server does not crash, returns non-empty text response (≥3 tokens)
 #   - 8-bit run: same
-#   - Multi-turn run: second turn with kv_bits=4 also succeeds (exercises sharedKV path)
+#   - Longer prompt run: exercises the last-20-layer KV-sharing path, same pass criteria
+#   - Baseline (no kv_bits): regression guard that the non-quantized path still works
 if [ "$suite_opt" == "9" ]; then
     echo ""
     echo "=> Test 9: Quantized KV Cache Regression (issue #71) on $FULL_MODEL"
@@ -995,7 +996,7 @@ if [ "$suite_opt" == "9" ]; then
     $BIN --model "$FULL_MODEL" --port 5431 --stream-experts --ctx-size 8192 > ./tmp/kvcache_regression.log 2>&1 &
     SERVER_PID=$!
 
-    echo "Waiting for server (up to 180s)..."
+    SERVER_READY=0
     for i in {1..180}; do
         if ! kill -0 $SERVER_PID 2>/dev/null; then
             echo "❌ Server died early. Logs:"
@@ -1004,10 +1005,17 @@ if [ "$suite_opt" == "9" ]; then
         fi
         if curl -sf http://127.0.0.1:5431/health > /dev/null 2>&1; then
             echo "Server ready (${i}s)"
+            SERVER_READY=1
             break
         fi
         sleep 1
     done
+    if [ $SERVER_READY -eq 0 ]; then
+        echo "❌ Server not ready after 180s. Logs:"
+        print_server_log ./tmp/kvcache_regression.log
+        kill $SERVER_PID 2>/dev/null
+        exit 1
+    fi
 
     echo ""
     echo "Running QuantizedKVCache regression suite..."
@@ -1041,8 +1049,8 @@ def call(messages, kv_bits=None, max_tokens=60, temperature=0.0):
         return None, str(e), time.time() - t0
     elapsed = time.time() - t0
     content = d["choices"][0]["message"].get("content") or ""
-    # Strip Gemma-4 thinking blocks
-    content = re.sub(r"<\|channel\|>thought.*?<channel\|>", "", content, flags=re.DOTALL).strip()
+    # Strip Gemma-4 thinking blocks — handle both <|channel|>thought and <|channel>thought variants
+    content = re.sub(r"<\|channel\|?>thought.*?<channel\|?>", "", content, flags=re.DOTALL).strip()
     return d, content, elapsed
 
 MSGS_SHORT = [

@@ -1048,6 +1048,16 @@ func handleChatCompletion(
         // These are accepted but may not affect generation if MLX doesn't support them
     }
 
+    // ── Validate kv_bits: only nil, 4, and 8 are supported ──
+    if let kb = chatReq.kvBits, kb != 4 && kb != 8 {
+        let errBody = "{\"error\":{\"message\":\"Invalid kv_bits value \(kb). Supported values are 4 and 8.\",\"type\":\"invalid_request_error\",\"code\":\"invalid_kv_bits\"}}"
+        return Response(
+            status: .badRequest,
+            headers: jsonHeaders(),
+            body: .init(byteBuffer: ByteBuffer(string: errBody))
+        )
+    }
+
     let params = GenerateParameters(
         maxTokens: tokenLimit,
         maxKVSize: config.ctxSize,
@@ -1201,9 +1211,13 @@ func handleChatCompletion(
         // raw <|image|>/<|audio|> token embeddings instead of the projected features.
         let isMultimodalRequest = lmInput.image != nil || lmInput.audio != nil
 
-        // Try to restore via token-by-token prefix match (llama-server style)
+        // Try to restore via token-by-token prefix match (llama-server style).
+        // Skip for quantized-KV requests: the prompt cache stores KV state produced
+        // with KVCacheSimple; restoring it into a QuantizedKVCache (or vice-versa)
+        // is unsafe and produces incorrect results or runtime failures.
+        let skipPromptCache = isMultimodalRequest || params.kvBits != nil
         var stream: AsyncStream<Generation>
-        if !isMultimodalRequest, let cachedCount = await promptCache.restore(newTokens: promptTokens, into: cache) {
+        if !skipPromptCache, let cachedCount = await promptCache.restore(newTokens: promptTokens, into: cache) {
             // Cache hit: KV state is pre-populated up to cachedCount tokens.
             // Only compute the remaining (new) tokens.
             var startIndex = cachedCount
@@ -1252,6 +1266,10 @@ func handleChatCompletion(
         let onPrefillDone: (() async -> Void)? = {
             if turboHasCompressed {
                 print("[SwiftLM] 🧠 Skipping prompt cache save — TurboQuant has compressed \(cache.compactMap { ($0 as? KVCacheSimple)?.compressedOffset }.max() ?? 0) tokens. Saving would decode ~37 GB back to fp16.")
+            } else if params.kvBits != nil {
+                // kv_bits is set: the cache contains QuantizedKVCache layers whose token
+                // format is incompatible with the FP16 KVCacheSimple format expected by
+                // promptCache.save. Skip saving to prevent unsafe mixed-format restores.
             } else {
                 await promptCache.save(tokens: promptTokens, cache: cache)
             }
@@ -2306,7 +2324,8 @@ struct ChatCompletionRequest: Decodable {
     let chatTemplateKwargs: [String: Bool]?
     /// Top-level thinking override emitted by Aegis-AI gateway
     let enableThinking: Bool?
-    /// Number of bits for native MLX quantized KV cache (nil = no quantization, 4 or 8 typical).
+    /// Number of bits for native MLX quantized KV cache (nil = no quantization).
+    /// Only 4 and 8 are supported by the underlying MLX QuantizedKVCache.
     /// Enables `QuantizedKVCache` instead of `KVCacheSimple`.  Separate from `--turbo-kv`.
     let kvBits: Int?
 
