@@ -1051,6 +1051,7 @@ func handleChatCompletion(
     let params = GenerateParameters(
         maxTokens: tokenLimit,
         maxKVSize: config.ctxSize,
+        kvBits: chatReq.kvBits,
         temperature: temperature,
         topP: topP,
         topK: topK,
@@ -2305,6 +2306,9 @@ struct ChatCompletionRequest: Decodable {
     let chatTemplateKwargs: [String: Bool]?
     /// Top-level thinking override emitted by Aegis-AI gateway
     let enableThinking: Bool?
+    /// Number of bits for native MLX quantized KV cache (nil = no quantization, 4 or 8 typical).
+    /// Enables `QuantizedKVCache` instead of `KVCacheSimple`.  Separate from `--turbo-kv`.
+    let kvBits: Int?
 
     enum CodingKeys: String, CodingKey {
         case model, messages, stream, temperature, tools, stop, seed
@@ -2319,6 +2323,7 @@ struct ChatCompletionRequest: Decodable {
         case responseFormat = "response_format"
         case chatTemplateKwargs = "chat_template_kwargs"
         case enableThinking = "enable_thinking"
+        case kvBits = "kv_bits"
     }
 }
 

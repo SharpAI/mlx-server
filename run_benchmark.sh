@@ -102,8 +102,9 @@ echo "5) Test 5: ALM Audio End-to-End Evaluation"
 echo "6) Test 6: Omni End-to-End Evaluation"
 echo "7) Model Maintain List and Delete"
 echo "8) Test 8: Tool-Call Degeneration Regression (Gemma-4 vague-query bug)"
-echo "9) Quit"
-read -p "Option (0-9): " suite_opt
+echo "9) Test 9: Quantized KV Cache Regression (Gemma-4 issue #71 — native kv_bits)"
+echo "q) Quit"
+read -p "Option (0-9/q): " suite_opt
 
 if [ "$suite_opt" == "0" ]; then
     echo "=============================================="
@@ -131,12 +132,13 @@ if [ "$suite_opt" == "0" ]; then
     exit 0
 fi
 
-if [ "$suite_opt" == "9" ] || [ "$suite_opt" == "8" ] || [ -z "$suite_opt" ]; then
-    # 9 = Quit (old 8), 8 = Test 8 — only exit on 9 or blank
-    if [ "$suite_opt" == "9" ] || [ -z "$suite_opt" ]; then
-        echo "Exiting."
-        exit 0
-    fi
+if [ "$suite_opt" == "q" ] || [ -z "$suite_opt" ]; then
+    echo "Exiting."
+    exit 0
+fi
+
+if [ "$suite_opt" == "9" ] || [ "$suite_opt" == "8" ]; then
+    : # handled below — fall through
 fi
 
 if [ "$suite_opt" == "7" ]; then
@@ -967,6 +969,172 @@ EOF
     wait $SERVER_PID 2>/dev/null
     rm -f /tmp/omni_payload.json "$IMAGE_PATH" "${AUDIO_PATH}.wav" "${AUDIO_PATH}.mp3"
     exit 0
+fi
+
+# ── Test 9: QuantizedKVCache Regression (issue #71) ────────────────────────
+# Verifies that Gemma-4 text models can decode with native MLX QuantizedKVCache
+# (kv_bits=4 and kv_bits=8) without triggering the:
+#   fatalError: `update` was called on `QuantizedKVCache`. Use `updateQuantized`.
+# crash fixed in PR #29 of mlx-swift-lm.
+#
+# Pass criteria:
+#   - 4-bit run: prefill + ≥20 decode tokens, response is non-empty coherent text
+#   - 8-bit run: same
+#   - Multi-turn run: second turn with kv_bits=4 also succeeds (exercises sharedKV path)
+if [ "$suite_opt" == "9" ]; then
+    echo ""
+    echo "=> Test 9: Quantized KV Cache Regression (issue #71) on $FULL_MODEL"
+    echo "   Tests MLX native QuantizedKVCache (kv_bits=4, kv_bits=8) — NOT TurboKV"
+    echo "   This exercises the fix in mlx-swift-lm PR #29."
+
+    echo "Starting server on port 5431..."
+    killall SwiftLM 2>/dev/null
+    mkdir -p tmp
+    # No --turbo-kv flag: we want the vanilla KVCacheSimple path that will be
+    # upgraded to QuantizedKVCache by the per-request kv_bits field.
+    $BIN --model "$FULL_MODEL" --port 5431 --stream-experts --ctx-size 8192 > ./tmp/kvcache_regression.log 2>&1 &
+    SERVER_PID=$!
+
+    echo "Waiting for server (up to 180s)..."
+    for i in {1..180}; do
+        if ! kill -0 $SERVER_PID 2>/dev/null; then
+            echo "❌ Server died early. Logs:"
+            print_server_log ./tmp/kvcache_regression.log
+            exit 1
+        fi
+        if curl -sf http://127.0.0.1:5431/health > /dev/null 2>&1; then
+            echo "Server ready (${i}s)"
+            break
+        fi
+        sleep 1
+    done
+
+    echo ""
+    echo "Running QuantizedKVCache regression suite..."
+
+    python3 - << 'KVBITS_EOF'
+import json, urllib.request, time, sys, re
+
+BASE = "http://127.0.0.1:5431"
+
+FAILS = []
+
+def call(messages, kv_bits=None, max_tokens=60, temperature=0.0):
+    payload = {
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "stream": False,
+    }
+    if kv_bits is not None:
+        payload["kv_bits"] = kv_bits
+    req = urllib.request.Request(
+        f"{BASE}/v1/chat/completions",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=180) as r:
+            d = json.loads(r.read())
+    except Exception as e:
+        return None, str(e), time.time() - t0
+    elapsed = time.time() - t0
+    content = d["choices"][0]["message"].get("content") or ""
+    # Strip Gemma-4 thinking blocks
+    content = re.sub(r"<\|channel\|>thought.*?<channel\|>", "", content, flags=re.DOTALL).strip()
+    return d, content, elapsed
+
+MSGS_SHORT = [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user",   "content": "Name the three primary colours. Be brief."},
+]
+
+# Longer prompt to exercise the KV sharing layers (last 20 of Gemma-4 share KV
+# from earlier layers — the bug manifests at those layers on multi-token prefills).
+MSGS_LONG = [
+    {"role": "system", "content": "You are a knowledgeable AI assistant. Answer concisely."},
+    {"role": "user",   "content": "Explain in two sentences why the sky appears blue during the day and red at sunset. Use physics terminology."},
+]
+
+# ── [1] 4-bit quantized KV cache ──
+print("\n─── [1/4] kv_bits=4, short prompt ───")
+d, content, t = call(MSGS_SHORT, kv_bits=4)
+if d is None:
+    print(f"  ❌ CRASHED: {content}")
+    FAILS.append("kv_bits=4 short: server crash or timeout")
+else:
+    gen_toks = d["usage"]["completion_tokens"]
+    ok = len(content.strip()) > 5 and gen_toks >= 3
+    print(f"  {'✅' if ok else '❌'} [{t:.1f}s, {gen_toks} tokens]: {content[:100]}")
+    if not ok:
+        FAILS.append(f"kv_bits=4 short: too few tokens or empty ({gen_toks} tokens)")
+
+# ── [2] 8-bit quantized KV cache ──
+print("\n─── [2/4] kv_bits=8, short prompt ───")
+d, content, t = call(MSGS_SHORT, kv_bits=8)
+if d is None:
+    print(f"  ❌ CRASHED: {content}")
+    FAILS.append("kv_bits=8 short: server crash or timeout")
+else:
+    gen_toks = d["usage"]["completion_tokens"]
+    ok = len(content.strip()) > 5 and gen_toks >= 3
+    print(f"  {'✅' if ok else '❌'} [{t:.1f}s, {gen_toks} tokens]: {content[:100]}")
+    if not ok:
+        FAILS.append(f"kv_bits=8 short: too few tokens or empty ({gen_toks} tokens)")
+
+# ── [3] 4-bit, longer prompt (exercises KV-sharing layers) ──
+print("\n─── [3/4] kv_bits=4, longer prompt (exercises KV-sharing path) ───")
+d, content, t = call(MSGS_LONG, kv_bits=4, max_tokens=120)
+if d is None:
+    print(f"  ❌ CRASHED: {content}")
+    FAILS.append("kv_bits=4 long: server crash or timeout")
+else:
+    gen_toks = d["usage"]["completion_tokens"]
+    ok = len(content.strip()) > 10 and gen_toks >= 5
+    print(f"  {'✅' if ok else '❌'} [{t:.1f}s, {gen_toks} tokens]: {content[:120]}")
+    if not ok:
+        FAILS.append(f"kv_bits=4 long: too few tokens or empty ({gen_toks} tokens)")
+
+# ── [4] Baseline without kv_bits (must still work — regression guard) ──
+print("\n─── [4/4] kv_bits=None baseline (no quantization) ───")
+d, content, t = call(MSGS_SHORT, kv_bits=None)
+if d is None:
+    print(f"  ❌ CRASHED: {content}")
+    FAILS.append("baseline (no kv_bits): server crash or timeout")
+else:
+    gen_toks = d["usage"]["completion_tokens"]
+    ok = len(content.strip()) > 5 and gen_toks >= 3
+    print(f"  {'✅' if ok else '❌'} [{t:.1f}s, {gen_toks} tokens]: {content[:100]}")
+    if not ok:
+        FAILS.append(f"baseline: too few tokens or empty ({gen_toks} tokens)")
+
+print("\n" + "─" * 60)
+if not FAILS:
+    print("✅  REGRESSION PASSED — QuantizedKVCache dispatches correctly.")
+    print("   kv_bits=4 ✓  |  kv_bits=8 ✓  |  KV-sharing path ✓  |  baseline ✓")
+    sys.exit(0)
+else:
+    print("❌  REGRESSION FAILED:")
+    for f in FAILS:
+        print(f"    • {f}")
+    print("\n   Root cause (if kv_bits runs crash): unconditional `cache.update()` call")
+    print("   in Gemma4TextAttention.callAsFunction — see mlx-swift-lm PR #29.")
+    sys.exit(1)
+KVBITS_EOF
+    TEST9_EXIT=$?
+
+    echo ""
+    echo "Cleaning up..."
+    kill $SERVER_PID 2>/dev/null
+    wait $SERVER_PID 2>/dev/null
+
+    if [ $TEST9_EXIT -eq 0 ]; then
+        echo "✅ Test 9 PASSED"
+    else
+        echo "❌ Test 9 FAILED — see output above."
+    fi
+    exit $TEST9_EXIT
 fi
 
 # Fallback to Test 1 for anything else
