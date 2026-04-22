@@ -1432,6 +1432,13 @@ func handleChatStreaming(
         var stopped = false
         var firstToken = true
         var tracker = ThinkingStateTracker()
+        // Unconditional cleanup: guarantees heartbeat is cancelled on ALL exit paths
+        // (normal completion, client disconnect, or task cancellation during prefill).
+        defer {
+            heartbeatTask?.cancel()
+            heartbeatTask = nil
+            activePrefillProgressHook = nil
+        }
         
         // ── JSON mode streaming: buffer early tokens to strip hallucinated prefixes ──
         var jsonBuffering = jsonMode
@@ -1854,6 +1861,13 @@ func handleTextStreaming(
         var fullText = ""
         var stopped = false
         var firstToken = true
+        // Unconditional cleanup: guarantees heartbeat is cancelled on ALL exit paths
+        // (normal completion, client disconnect, or task cancellation during prefill).
+        defer {
+            heartbeatTask?.cancel()
+            heartbeatTask = nil
+            activePrefillProgressHook = nil
+        }
         for await generation in stream {
             if stopped { break }
             switch generation {
