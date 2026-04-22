@@ -661,7 +661,7 @@ struct MLXServer: AsyncParsableCommand {
             do {
                 let bodyData = try await collectBody(request)
                 return try await handleChatCompletion(
-                    bodyData: bodyData, config: config, container: container, semaphore: semaphore, stats: stats, promptCache: promptCache,
+                    request: request, bodyData: bodyData, config: config, container: container, semaphore: semaphore, stats: stats, promptCache: promptCache,
                     draftModelRef: draftModelRef, numDraftTokens: numDraftTokensConfig
                 )
             } catch {
@@ -682,7 +682,7 @@ struct MLXServer: AsyncParsableCommand {
             do {
                 let bodyData = try await collectBody(request)
                 return try await handleTextCompletion(
-                    bodyData: bodyData, config: config, container: container, semaphore: semaphore, stats: stats
+                    request: request, bodyData: bodyData, config: config, container: container, semaphore: semaphore, stats: stats
                 )
             } catch {
                 let errMsg = String(describing: error).replacingOccurrences(of: "\"", with: "'")
@@ -1020,6 +1020,7 @@ func collectBody(_ request: Request) async throws -> Data {
 // ── Chat Completions Handler ─────────────────────────────────────────────────
 
 func handleChatCompletion(
+    request: Request,
     bodyData: Data,
     config: ServerConfig,
     container: ModelContainer,
@@ -1032,6 +1033,7 @@ func handleChatCompletion(
     let chatReq = try JSONDecoder().decode(ChatCompletionRequest.self, from: bodyData)
     let isStream = chatReq.stream ?? false
     let jsonMode = chatReq.responseFormat?.type == "json_object"
+    let emitPrefillProgress = prefillProgressEnabled(in: request)
 
     // ── Merge per-request overrides with CLI defaults ──
     let tokenLimit = chatReq.maxTokens ?? config.maxTokens
@@ -1284,7 +1286,8 @@ func handleChatCompletion(
             stream: stream, modelId: modelId, stopSequences: stopSequences,
             includeUsage: includeUsage, promptTokenCount: promptTokenCount,
             enableThinking: enableThinking, jsonMode: jsonMode, semaphore: semaphore,
-            stats: stats, genStart: genStart, prefillStart: prefillStart, onPrefillDone: onPrefillDone
+            stats: stats, genStart: genStart, prefillStart: prefillStart,
+            emitPrefillProgress: emitPrefillProgress, onPrefillDone: onPrefillDone
         )
     } else {
         return try await handleChatNonStreaming(
@@ -1384,29 +1387,32 @@ func handleChatStreaming(
     stats: ServerStats,
     genStart: Date,
     prefillStart: Date,
+    emitPrefillProgress: Bool,
     onPrefillDone: (() async -> Void)? = nil
 ) -> Response {
     let (sseStream, cont) = AsyncStream<String>.makeStream()
 
-    // ── Prefill heartbeat: emit llama-server-style slot_update progress every 2 s ──
-    // n_past is updated by activePrefillProgressHook in LLMModel.prepare() after each
-    // 512-token chunk; single-chunk prompts only show elapsed_seconds.
     let prefillState = PrefillState()
-    activePrefillProgressHook = { nPast, _ in
-        Task { await prefillState.update(nPast: nPast) }
-    }
-    Task {
-        var elapsed = 0
-        while await !prefillState.done {
-            try? await Task.sleep(for: .seconds(2))
-            if await !prefillState.done {
-                elapsed += 2
-                let nPast = await prefillState.nPast
-                _ = cont.yield(ssePrefillChunk(
-                    modelId: modelId,
-                    nPast: nPast,
-                    promptTokens: promptTokenCount,
-                    elapsedSeconds: elapsed))
+    activePrefillProgressHook = nil
+    if emitPrefillProgress {
+        // ── Optional prefill heartbeat: emit a named SSE event every 2 s ──
+        // n_past is updated by activePrefillProgressHook in LLMModel.prepare() after each
+        // 512-token chunk; single-chunk prompts only show elapsed_seconds.
+        activePrefillProgressHook = { nPast, _ in
+            Task { await prefillState.update(nPast: nPast) }
+        }
+        Task {
+            var elapsed = 0
+            while await !prefillState.done {
+                try? await Task.sleep(for: .seconds(2))
+                if await !prefillState.done {
+                    elapsed += 2
+                    let nPast = await prefillState.nPast
+                    _ = cont.yield(ssePrefillChunk(
+                        nPast: nPast,
+                        promptTokens: promptTokenCount,
+                        elapsedSeconds: elapsed))
+                }
             }
         }
     }
@@ -1735,6 +1741,7 @@ func extractThinkingBlock(from text: String) -> (String?, String) {
 // ── Text Completions Handler ─────────────────────────────────────────────────
 
 func handleTextCompletion(
+    request: Request,
     bodyData: Data,
     config: ServerConfig,
     container: ModelContainer,
@@ -1743,6 +1750,7 @@ func handleTextCompletion(
 ) async throws -> Response {
     let compReq = try JSONDecoder().decode(TextCompletionRequest.self, from: bodyData)
     let isStream = compReq.stream ?? false
+    let emitPrefillProgress = prefillProgressEnabled(in: request)
 
     let tokenLimit = compReq.maxTokens ?? config.maxTokens
     let temperature = compReq.temperature.map(Float.init) ?? config.temp
@@ -1783,7 +1791,8 @@ func handleTextCompletion(
     if isStream {
         return handleTextStreaming(
             stream: stream, modelId: modelId, stopSequences: stopSequences,
-            semaphore: semaphore, stats: stats, genStart: genStart
+            promptTokenCount: promptTokenCount, semaphore: semaphore, stats: stats,
+            genStart: genStart, emitPrefillProgress: emitPrefillProgress
         )
     } else {
         return try await handleTextNonStreaming(
@@ -1799,19 +1808,48 @@ func handleTextStreaming(
     stream: AsyncStream<Generation>,
     modelId: String,
     stopSequences: [String],
+    promptTokenCount: Int,
     semaphore: AsyncSemaphore,
     stats: ServerStats,
-    genStart: Date
+    genStart: Date,
+    emitPrefillProgress: Bool
 ) -> Response {
     let (sseStream, cont) = AsyncStream<String>.makeStream()
+    let prefillState = PrefillState()
+    activePrefillProgressHook = nil
+    if emitPrefillProgress {
+        activePrefillProgressHook = { nPast, _ in
+            Task { await prefillState.update(nPast: nPast) }
+        }
+        Task {
+            var elapsed = 0
+            while await !prefillState.done {
+                try? await Task.sleep(for: .seconds(2))
+                if await !prefillState.done {
+                    elapsed += 2
+                    let nPast = await prefillState.nPast
+                    _ = cont.yield(ssePrefillChunk(
+                        nPast: nPast,
+                        promptTokens: promptTokenCount,
+                        elapsedSeconds: elapsed))
+                }
+            }
+        }
+    }
     Task {
         var completionTokenCount = 0
         var fullText = ""
         var stopped = false
+        var firstToken = true
         for await generation in stream {
             if stopped { break }
             switch generation {
             case .chunk(let text, _):
+                if firstToken {
+                    activePrefillProgressHook = nil
+                    await prefillState.finish()
+                    firstToken = false
+                }
                 completionTokenCount += 1
                 fullText += text
                 // GPU yield: prevent Metal from starving macOS WindowServer
@@ -1834,6 +1872,8 @@ func handleTextStreaming(
             case .toolCall:
                 break
             case .info(let info):
+                activePrefillProgressHook = nil
+                await prefillState.finish()
                 if !stopped {
                     var reason: String
                     switch info.stopReason {
@@ -1979,7 +2019,7 @@ struct CORSMiddleware<Context: RequestContext>: RouterMiddleware {
             }
         }
         fields.append(HTTPField(name: HTTPField.Name("Access-Control-Allow-Methods")!, value: "GET, POST, OPTIONS"))
-        fields.append(HTTPField(name: HTTPField.Name("Access-Control-Allow-Headers")!, value: "Content-Type, Authorization"))
+        fields.append(HTTPField(name: HTTPField.Name("Access-Control-Allow-Headers")!, value: "Content-Type, Authorization, X-SwiftLM-Prefill-Progress"))
         return HTTPFields(fields)
     }
 }
@@ -2032,6 +2072,22 @@ func jsonHeaders() -> HTTPFields {
     HTTPFields([HTTPField(name: .contentType, value: "application/json")])
 }
 
+let prefillProgressHeaderName = HTTPField.Name("X-SwiftLM-Prefill-Progress")!
+
+func parseTruthyHeaderValue(_ value: String?) -> Bool {
+    guard let value else { return false }
+    switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "1", "on", "true", "yes":
+        return true
+    default:
+        return false
+    }
+}
+
+func prefillProgressEnabled(in request: Request) -> Bool {
+    parseTruthyHeaderValue(request.headers[values: prefillProgressHeaderName].first)
+}
+
 func sseHeaders() -> HTTPFields {
     HTTPFields([
         HTTPField(name: .contentType, value: "text/event-stream"),
@@ -2074,30 +2130,25 @@ func sseChunk(modelId: String, reasoningContent: String?, content: String?, fini
     return "data: \(String(data: data, encoding: .utf8)!)\r\n\r\n"
 }
 
-/// Prefill-progress heartbeat chunk — emitted every 2s while the server is processing the prompt.
-/// Uses object type "prefill_progress" so clients can filter it without confusing it with real tokens.
+/// Prefill-progress heartbeat chunk — emitted every 2s while the server is processing the prompt
+/// when explicitly enabled via `X-SwiftLM-Prefill-Progress: true`.
+/// It is sent as a named SSE event to avoid breaking strict OpenAI-compatible clients.
 /// Format mirrors llama-server's slot_update event:
 ///   n_past          : tokens evaluated so far (real value from chunked prefill, or 0 for single-chunk)
 ///   n_prompt_tokens : total prompt token count
 ///   fraction        : n_past / n_prompt_tokens (0.0–1.0), useful for progress bars
 ///   elapsed_seconds : wall-clock time since the request started
-func ssePrefillChunk(modelId: String, nPast: Int = 0, promptTokens: Int, elapsedSeconds: Int) -> String {
+func ssePrefillChunk(nPast: Int = 0, promptTokens: Int, elapsedSeconds: Int) -> String {
     let fraction = promptTokens > 0 ? Double(nPast) / Double(promptTokens) : 0.0
     let chunk: [String: Any] = [
-        "id": "prefill-\(UUID().uuidString)",
-        "object": "prefill_progress",
-        "created": Int(Date().timeIntervalSince1970),
-        "model": modelId,
-        "prefill": [
-            "status": "processing",
-            "n_past": nPast,
-            "n_prompt_tokens": promptTokens,
-            "fraction": fraction,
-            "elapsed_seconds": elapsedSeconds
-        ]
+        "status": "processing",
+        "n_past": nPast,
+        "n_prompt_tokens": promptTokens,
+        "fraction": fraction,
+        "elapsed_seconds": elapsedSeconds
     ]
     let data = try! JSONSerialization.data(withJSONObject: chunk)
-    return "data: \(String(data: data, encoding: .utf8)!)\r\n\r\n"
+    return "event: prefill_progress\r\ndata: \(String(data: data, encoding: .utf8)!)\r\n\r\n"
 }
 
 func sseUsageChunk(modelId: String, promptTokens: Int, completionTokens: Int) -> String {
