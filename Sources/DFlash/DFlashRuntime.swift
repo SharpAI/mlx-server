@@ -459,7 +459,7 @@ public enum DFlashRuntime {
             // ── Draft Phase ──────────────────────────────────────
             // Use prefetched draft if available and blockLen matches
             var drafted: MLXArray?
-            var currentStagedFirst = stagedFirst
+            let currentStagedFirst = stagedFirst
             if blockLen > 1 {
                 if let pf = prefetchedDraft, prefetchedBlockLen == blockLen {
                     drafted = pf
