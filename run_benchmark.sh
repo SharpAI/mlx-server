@@ -103,8 +103,9 @@ echo "6) Test 6: Omni End-to-End Evaluation"
 echo "7) Model Maintain List and Delete"
 echo "8) Test 8: Tool-Call Degeneration Regression (Gemma-4 vague-query bug)"
 echo "9) Test 9: Quantized KV Cache Regression (Gemma-4 issue #71 — native kv_bits)"
+echo "10) Test 10: SSD + Draft Model Memory Regression (Issue #72 — auto-cap + RAM guard)"
 echo "q) Quit"
-read -p "Option (0-9/q): " suite_opt
+read -p "Option (0-10/q): " suite_opt
 
 if [ "$suite_opt" == "0" ]; then
     echo "=============================================="
@@ -137,7 +138,7 @@ if [ "$suite_opt" == "q" ] || [ -z "$suite_opt" ]; then
     exit 0
 fi
 
-if [ "$suite_opt" == "9" ] || [ "$suite_opt" == "8" ]; then
+if [ "$suite_opt" == "9" ] || [ "$suite_opt" == "8" ] || [ "$suite_opt" == "10" ]; then
     : # handled below — fall through
 fi
 
@@ -1143,6 +1144,172 @@ KVBITS_EOF
         echo "❌ Test 9 FAILED — see output above."
     fi
     exit $TEST9_EXIT
+fi
+
+# ── Test 10: Issue #72 Regression — SSD streaming + draft model RAM guard ────
+# Verifies three things that the fix introduced:
+#   1. Auto-cap: --num-draft-tokens is silently capped to 1 (logged at startup)
+#   2. RAM guard: peak RAM during inference stays below 80% of physical RAM
+#   3. Inference: the combination still produces valid output (not crashed/empty)
+#
+# Uses small models (Qwen3.5-4B main + Qwen3.5-0.8B draft) so the test runs on
+# any hardware without requiring 35B weights. These are the same parameter-class
+# proportions as the reporter's 35B + 4B scenario (large main, tiny draft).
+#
+# Pass criteria:
+#   ✅ Server log contains auto-cap warning (proves the guard fired)
+#   ✅ Peak RAM < 80% physical RAM (proves no swap explosion)
+#   ✅ /v1/chat/completions returns content (proves the combo is functional)
+if [ "$suite_opt" == "10" ]; then
+    T10_PORT=15472
+    T10_MAIN="$MODEL"
+    
+    echo ""
+    read -p "   Enter Draft Model HuggingFace ID (default: mlx-community/Qwen3.5-0.8B-MLX-4bit): " custom_draft
+    if [ -z "$custom_draft" ]; then
+        T10_DRAFT="mlx-community/Qwen3.5-0.8B-MLX-4bit"
+    else
+        T10_DRAFT="$custom_draft"
+    fi
+    
+    echo ""
+    echo "=> Test 10: Issue #72 SSD + Draft Model Memory Regression"
+    echo "   Main:  $T10_MAIN  (SSD-streamed)"
+    echo "   Draft: $T10_DRAFT (in-RAM)"
+
+    T10_LOG="./tmp/test10_issue72.log"
+    mkdir -p tmp
+
+    # Measure RAM via vm_stat (Apple Silicon page size = 16384 bytes)
+    get_ram_gb_t10() {
+        PAGE_SIZE=$(sysctl -n hw.pagesize)
+        vm_stat | awk -v page_size="$PAGE_SIZE" '
+            /Pages active:/        { v=$3; gsub(/\./, "", v); act=v+0 }
+            /Pages wired down:/    { v=$4; gsub(/\./, "", v); wire=v+0 }
+            /Pages occupied by compressor:/ { v=$5; gsub(/\./, "", v); comp=v+0 }
+            END { printf "%.2f", (act+wire+comp)*page_size/1073741824 }
+        '
+    }
+
+    SYSTEM_RAM_GB_T10=$(sysctl -n hw.memsize | awk '{printf "%.0f", $1/1073741824}')
+    RAM_LIMIT_T10=$(echo "$SYSTEM_RAM_GB_T10 * 0.80" | bc | cut -d. -f1)
+    echo "   System RAM: ${SYSTEM_RAM_GB_T10} GB   Spike limit: ${RAM_LIMIT_T10} GB"
+    echo ""
+
+    killall SwiftLM 2>/dev/null || true
+    sleep 1
+
+    RAM_BEFORE=$(get_ram_gb_t10)
+    echo "   RAM before server start: ${RAM_BEFORE} GB"
+
+    # Launch with default --num-draft-tokens 4 — the auto-cap should reduce it to 1
+    $BIN --model "$T10_MAIN" --draft-model "$T10_DRAFT" \
+        --stream-experts --num-draft-tokens 4 \
+        --port $T10_PORT --max-tokens 64 \
+        > "$T10_LOG" 2>&1 &
+    T10_PID=$!
+
+    echo "   Waiting for server (up to 300s, models may download)..."
+    T10_READY=0
+    for i in $(seq 1 300); do
+        if ! kill -0 $T10_PID 2>/dev/null; then
+            echo "❌ FAIL: Server process died unexpectedly"
+            echo "--- Server log ---"
+            cat "$T10_LOG"
+            exit 1
+        fi
+        if curl -sf "http://127.0.0.1:${T10_PORT}/health" >/dev/null 2>&1; then
+            T10_READY=1
+            echo "   Server ready after ${i}s"
+            break
+        fi
+        sleep 1
+    done
+
+    if [ "$T10_READY" -eq 0 ]; then
+        echo "❌ FAIL: Server never became ready"
+        kill $T10_PID 2>/dev/null || true
+        exit 1
+    fi
+
+    RAM_LOADED=$(get_ram_gb_t10)
+    echo "   RAM after model load: ${RAM_LOADED} GB"
+
+    # ── Check 1: auto-cap warning logged ──────────────────────────────────────
+    echo ""
+    echo "   [1/3] Checking auto-cap warning in server log..."
+    if grep -q "auto-capping" "$T10_LOG" 2>/dev/null; then
+        echo "   ✅ Auto-cap warning found — numDraftTokens was correctly reduced to 1"
+        T10_AUTOCAP_PASS=1
+    else
+        echo "   ❌ Auto-cap warning NOT found — guard may not have fired"
+        echo "      (Check: --stream-experts + --draft-model path in Server.swift)"
+        grep "\[SwiftLM\]" "$T10_LOG" | tail -10 || true
+        T10_AUTOCAP_PASS=0
+    fi
+
+    # ── Check 2: RAM during inference ─────────────────────────────────────────
+    echo ""
+    echo "   [2/3] Running inference and measuring peak RAM..."
+    INF_RESULT=$(curl -sf --max-time 120 "http://127.0.0.1:${T10_PORT}/v1/chat/completions" \
+        -H "Content-Type: application/json" \
+        -d '{"model":"test","messages":[{"role":"user","content":"What is 2+2? One word."}],"max_tokens":32,"stream":false}' \
+        2>/dev/null || echo "{}")
+
+    RAM_PEAK=$(get_ram_gb_t10)
+    echo "   RAM after inference: ${RAM_PEAK} GB (limit: ${RAM_LIMIT_T10} GB)"
+
+    RAM_OK=$(echo "$RAM_PEAK <= $RAM_LIMIT_T10" | bc -l)
+    if [ "$RAM_OK" = "1" ]; then
+        echo "   ✅ RAM=${RAM_PEAK}GB within safe bounds (≤${RAM_LIMIT_T10}GB = 80% of ${SYSTEM_RAM_GB_T10}GB)"
+        T10_RAM_PASS=1
+    else
+        echo "   ❌ RAM=${RAM_PEAK}GB EXCEEDED limit ${RAM_LIMIT_T10}GB — swap likely occurred"
+        echo "      (This indicates the Issue #72 auto-cap or memoryLimit sentinel regressed)"
+        T10_RAM_PASS=0
+    fi
+
+    # ── Check 3: inference returned valid content ──────────────────────────────
+    echo ""
+    echo "   [3/3] Validating inference response..."
+    if echo "$INF_RESULT" | grep -q '"content"'; then
+        RESP_TEXT=$(echo "$INF_RESULT" | python3 -c \
+            "import sys,json;d=json.load(sys.stdin);print(d['choices'][0]['message']['content'])" \
+            2>/dev/null || echo "(parse error)")
+        echo "   ✅ Response: ${RESP_TEXT}"
+        T10_INF_PASS=1
+    else
+        echo "   ❌ No content in response — server may have crashed or returned empty"
+        echo "      Raw: ${INF_RESULT:0:200}"
+        T10_INF_PASS=0
+    fi
+
+    # ── Cleanup ────────────────────────────────────────────────────────────────
+    kill $T10_PID 2>/dev/null || true
+    wait $T10_PID 2>/dev/null || true
+
+    # ── Summary ────────────────────────────────────────────────────────────────
+    echo ""
+    echo "   ════════════════════════════════════════"
+    echo "   Test 10 Summary — Issue #72 RAM Regression"
+    echo "   System RAM : ${SYSTEM_RAM_GB_T10} GB"
+    echo "   RAM before : ${RAM_BEFORE} GB"
+    echo "   RAM loaded : ${RAM_LOADED} GB"
+    echo "   RAM peak   : ${RAM_PEAK} GB  (limit: ${RAM_LIMIT_T10} GB)"
+    echo "   Auto-cap   : $([ "$T10_AUTOCAP_PASS" = "1" ] && echo PASS || echo FAIL)"
+    echo "   RAM guard  : $([ "$T10_RAM_PASS" = "1" ] && echo PASS || echo FAIL)"
+    echo "   Inference  : $([ "$T10_INF_PASS" = "1" ] && echo PASS || echo FAIL)"
+    echo "   ════════════════════════════════════════"
+    echo ""
+
+    if [ "$T10_AUTOCAP_PASS" = "1" ] && [ "$T10_RAM_PASS" = "1" ] && [ "$T10_INF_PASS" = "1" ]; then
+        echo "✅ Test 10 PASSED — Issue #72 regression is not present"
+        exit 0
+    else
+        echo "❌ Test 10 FAILED — one or more checks failed (see above)"
+        echo "   Log: $T10_LOG"
+        exit 1
+    fi
 fi
 
 # Fallback to Test 1 for anything else

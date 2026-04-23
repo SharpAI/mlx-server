@@ -297,6 +297,34 @@ struct MLXServer: AsyncParsableCommand {
             modelConfig.lazyLoad = true
         }
 
+        // ── Strategy: --stream-experts + --draft-model ───────────────────────────
+        // README.md notes speculative decoding is "counterproductive" for SSD-streaming
+        // MoE at the default 4 draft tokens: the verify pass sends N+1 positions each
+        // routing to *different* experts, scaling SSD I/O by the union of all expert
+        // selections across every position simultaneously.
+        //
+        // However, with numDraftTokens = 1, the verify pass sends only 2 positions —
+        // minimal fan-out. If the draft acceptance rate is ≥ 50%, the draft model's
+        // speed advantage (~73 tok/s) still yields net positive throughput despite the
+        // 2× SSD I/O overhead, especially on models where the draft hit rate is high.
+        //
+        // Strategy: auto-cap numDraftTokens to 1 and print a performance advisory.
+        // This keeps the combination functional while minimising the fan-out penalty.
+        // Users who understand the tradeoff can still benefit from the draft model.
+        if self.streamExperts, self.draftModel != nil {
+            if self.numDraftTokens > 1 {
+                print("[SwiftLM] ⚠️  SSD streaming + draft model: auto-capping --num-draft-tokens to 1")
+                print("[SwiftLM]    With N>1 draft tokens the verify pass fans expert I/O across N+1 SSD")
+                print("[SwiftLM]    positions simultaneously, which regresses throughput vs no draft model.")
+                print("[SwiftLM]    At 1 draft token (2 positions) the fan-out is minimal and net positive")
+                print("[SwiftLM]    if draft acceptance rate ≥ 50%.")
+                print("[SwiftLM]    ℹ️  For best throughput: use --stream-experts alone (no draft model).")
+                self.numDraftTokens = 1
+            } else {
+                print("[SwiftLM] ℹ️  SSD streaming + draft model (1 token/round): minimal fan-out mode active.")
+            }
+        }
+
         // ── Pre-load profiling ──
         // Resolve model directory for profiling (checks HuggingFace cache)
         let modelDirectory = resolveModelDirectory(modelId: modelId)
@@ -317,6 +345,8 @@ struct MLXServer: AsyncParsableCommand {
             draftFootprintBytes = 0
         }
 
+        var mainModelProfile: ModelProfile? = nil
+
         if self.streamExperts, let modelDir = modelDirectory {
             setenv("EXPERIMENTAL_SSD_STREAM", modelDir.path, 1)
             // Activate the modern Swift ExpertStreamingConfig so Load.swift can:
@@ -331,17 +361,56 @@ struct MLXServer: AsyncParsableCommand {
             setenv("MLX_MAX_OPS_PER_BUFFER", "50", 1)
             print("[SwiftLM] Enabled Async SSD Streaming on directory: \(modelDir.lastPathComponent)")
 
-            // ── Fix #72: Apply SSD memory cap EARLY (before any model loads) ──
-            // Both the main model and draft model must load under the budget.
-            // The sentinel memoryLimit bypasses MLX eval_impl's spin-wait loop.
-            // Also address Copilot comment: apply the cap even when modelDirectory
-            // is nil (first-run download) so downloads also respect the budget.
+            // ── Fix #72 (inference-time): Context-aware memoryLimit ────────────
+            // The 200 GB sentinel bypasses MLX eval_impl's spin-wait loop and is
+            // safe for SSD streaming alone, because only one model's expert pages
+            // are demanded at a time.
+            //
+            // With --draft-model, speculative decoding alternates between the draft
+            // model and the main model in tight succession.  If combined weights
+            // exceed physical RAM, both models' pages thrash the SSD page cache
+            // simultaneously, and the 200 GB sentinel lets MLX demand 40+ GB
+            // without any back-pressure — swapping out to disk aggressively.
+            //
+            // Fix: when the combined footprint exceeds 70% of physical RAM, lower
+            // memoryLimit to physicalRAM × 1.1.  MLX will then hit its hard limit
+            // sooner and begin evicting old expert pages more aggressively instead
+            // of extending into swap.
             let system = ModelProfiler.systemProfile()
             if draftFootprintBytes > 0 {
                 print("[SwiftLM] 📦 Draft model footprint: \(String(format: "%.2f", Double(draftFootprintBytes) / 1e9))GB reserved from SSD budget")
             }
             Memory.cacheLimit = computeSSDMemoryBudget(totalRAMBytes: system.totalRAMBytes, draftWeightBytes: draftFootprintBytes)
-            Memory.memoryLimit = 200 * 1024 * 1024 * 1024 // 200 GB sentinel
+
+            // Determine safe memoryLimit sentinel
+            mainModelProfile = ModelProfiler.profile(modelDirectory: modelDir, modelId: modelId)
+            let mainFootprintBytes = mainModelProfile?.weightFileSizeBytes ?? 0
+            let combinedFootprint = mainFootprintBytes + draftFootprintBytes
+            let physicalRAM = Int(system.totalRAMBytes)
+            let combinedExceedsRAM = combinedFootprint > Int(Double(physicalRAM) * 0.70)
+
+            if combinedExceedsRAM && draftFootprintBytes > 0 {
+                // Combined model weights exceed 70% of physical RAM.
+                // Speculative decoding causes both models' pages to be demanded
+                // simultaneously during draft+verify cycles, which will thrash
+                // the SSD page cache and trigger heavy swap.
+                // Use a tight memoryLimit so MLX evicts pages rather than swapping.
+                let tightLimit = Int(Double(physicalRAM) * 1.1)
+                Memory.memoryLimit = tightLimit
+                print("[SwiftLM] ⚠️  SSD + draft-model RAM pressure warning:")
+                print("[SwiftLM]    Main model: \(String(format: "%.1f", Double(mainFootprintBytes) / 1e9))GB  Draft: \(String(format: "%.1f", Double(draftFootprintBytes) / 1e9))GB  Combined: \(String(format: "%.1f", Double(combinedFootprint) / 1e9))GB  Physical RAM: \(String(format: "%.1f", Double(physicalRAM) / 1e9))GB")
+                print("[SwiftLM]    Speculative decoding alternates both models' forward passes.")
+                print("[SwiftLM]    On this machine the combined weight exceeds physical RAM,")
+                print("[SwiftLM]    causing page-cache thrashing and swap during inference.")
+                print("[SwiftLM]    → Recommendation: remove --draft-model on this machine,")
+                print("[SwiftLM]      or use a smaller draft model whose weights fit in")
+                print("[SwiftLM]      remaining RAM after the main model's page budget (\(Memory.cacheLimit / (1024*1024*1024))GB).")
+                print("[SwiftLM]    Memory limit set to \(tightLimit / (1024*1024*1024))GB (tight cap for MLX eviction pressure)")
+            } else {
+                // No draft model, or combined fits in RAM — use the standard sentinel
+                // to bypass MLX eval_impl's spin-wait loop safely.
+                Memory.memoryLimit = 200 * 1024 * 1024 * 1024 // 200 GB sentinel
+            }
         } else if self.streamExperts {
             // modelDirectory is nil — model not yet downloaded (first-run).
             // Still apply the SSD memory cap so the download itself is bounded.
@@ -351,8 +420,9 @@ struct MLXServer: AsyncParsableCommand {
         }
         
         var partitionPlan: PartitionPlan?
-        if let modelDir = modelDirectory,
-           let profile = ModelProfiler.profile(modelDirectory: modelDir, modelId: modelId) {
+        if let modelDir = modelDirectory {
+           let profile = mainModelProfile ?? ModelProfiler.profile(modelDirectory: modelDir, modelId: modelId)
+           if let profile = profile {
             let system = ModelProfiler.systemProfile()
             let contextSize = self.ctxSize ?? 4096
             let plan = ModelProfiler.plan(model: profile, system: system, contextSize: contextSize)
@@ -375,7 +445,6 @@ struct MLXServer: AsyncParsableCommand {
                     // draftFootprintBytes pre-computed once above (Copilot review).
                     let physicalBudget = computeSSDMemoryBudget(totalRAMBytes: system.totalRAMBytes, draftWeightBytes: draftFootprintBytes)
                     Memory.cacheLimit = physicalBudget
-                    Memory.memoryLimit = 200 * 1024 * 1024 * 1024 // 200GB sentinel to bypass MLX eval_impl spin loop
                     print("[SwiftLM] 💾 Memory strategy: SSD STREAMING (page-cache managed, \(physicalBudget / (1024*1024*1024))GB RAM budget, no swap)")
                 } else {
                     Memory.cacheLimit = plan.recommendedCacheLimit
@@ -387,7 +456,6 @@ struct MLXServer: AsyncParsableCommand {
                     // draftFootprintBytes pre-computed once above (Copilot review).
                     let physicalBudget = computeSSDMemoryBudget(totalRAMBytes: system.totalRAMBytes, draftWeightBytes: draftFootprintBytes)
                     Memory.cacheLimit = physicalBudget
-                    Memory.memoryLimit = 200 * 1024 * 1024 * 1024 // 200GB sentinel to bypass MLX eval_impl spin loop
                     print("[SwiftLM] 💾 Memory strategy: SSD STREAMING (page-cache managed, \(physicalBudget / (1024*1024*1024))GB RAM budget, no swap)")
                 } else {
                     Memory.cacheLimit = plan.recommendedCacheLimit
@@ -399,6 +467,7 @@ struct MLXServer: AsyncParsableCommand {
                 print("[SwiftLM] \(plan.strategy.emoji) WARNING: Model is \(String(format: "%.1f", plan.overcommitRatio))× system RAM. Loading will be extremely slow.")
                 for w in plan.warnings { print("[SwiftLM]    \(w)") }
             }
+           }
         } else if self.info {
             print("[SwiftLM] Model not yet downloaded. Run without --info to download first, or provide a local path.")
             return

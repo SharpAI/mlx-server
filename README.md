@@ -242,7 +242,11 @@ SwiftLM implements a **rewritten SSD expert streaming pipeline** (engineered by 
 
 A novel aspect of this architecture is the **dual-model speculative decoding** pattern: a small draft model (e.g. Qwen3.5-9B at 73 tok/s) runs **entirely in RAM** while the large MoE model (e.g. 122B) streams experts from SSD. The draft model generates candidate tokens at high speed, and the main model verifies them in bulk — dramatically reducing the number of SSD-bound generation rounds needed.
 
-> **Important finding:** Speculative decoding is **counterproductive for SSD-streaming MoE** specifically. The verify pass sends N+1 tokens, each routing to *different* experts — SSD I/O scales with the *union* of all positions' expert selections. Speculative decoding is therefore routed exclusively to **in-RAM models**.
+> **Performance note:** Combining `--stream-experts` with `--draft-model` requires care. The verify pass sends N+1 tokens simultaneously, each routing to *different* experts — SSD I/O scales with the *union* of all positions' expert selections. At the default `--num-draft-tokens 4` this creates a **5× I/O fan-out** that regresses throughput below solo SSD streaming.
+>
+> **Auto-cap strategy (Issue #72 fix):** SwiftLM automatically caps `--num-draft-tokens` to **1** when both flags are active. With 1 draft token the verify pass covers only 2 positions (2× fan-out). If the draft model's acceptance rate is ≥ 50% — typical for same-family models — the net throughput is still positive despite the 2× I/O overhead. A startup advisory is printed when the cap fires.
+>
+> For maximum throughput: use `--stream-experts` alone (no draft model).
 
 ### Optimization Techniques
 
@@ -271,11 +275,20 @@ SWIFTLM_TOP_K=6 SwiftLM --port 8002 \
 SWIFTLM_TOP_K=4 SwiftLM --port 8002 \
   --model <path>/Qwen3.5-122B-A10B-4bit --stream-experts
 
-# With speculative decoding (in-RAM models only):
+# With speculative decoding (in-RAM models only — both models fit in RAM):
 SwiftLM --port 8002 \
   --model <path>/Qwen3.5-27B-4bit \
   --draft-model <path>/Qwen3.5-9B-4bit \
   --num-draft-tokens 4
+
+# With SSD streaming + draft model (auto-cap mode):
+# SwiftLM automatically caps --num-draft-tokens to 1 to minimise the
+# verify-pass I/O fan-out. Net positive if draft acceptance rate ≥ 50%.
+SwiftLM --port 8002 \
+  --model <path>/Qwen3.5-122B-A10B-4bit \
+  --stream-experts \
+  --draft-model <path>/Qwen3.5-9B-4bit
+  # ↑ num-draft-tokens is auto-capped to 1 at startup
 ```
 
 ---
@@ -404,8 +417,8 @@ curl http://localhost:5413/v1/chat/completions \
 | `--gpu-layers` | `model_default`| Restrict the amount of layers allocated to GPU hardware |
 | `--stream-experts` | `false` | Enable SSD expert streaming for MoE models (10x speedup) |
 | `--turbo-kv` | `false` | Enable TurboQuant 3-bit KV cache compression (activates after 2048 tokens, server-wide) |
-| `--draft-model` | (none) | Draft model path/ID for speculative decoding (in-RAM models only) |
-| `--num-draft-tokens` | `4` | Number of draft tokens per speculation round |
+| `--draft-model` | (none) | Draft model path/ID for speculative decoding. When used with `--stream-experts`, `--num-draft-tokens` is auto-capped to 1 to minimise SSD I/O fan-out (see performance note above). |
+| `--num-draft-tokens` | `4` | Tokens per speculation round. Auto-capped to 1 when combined with `--stream-experts`. |
 
 ## 🔧 Per-Request API Parameters
 

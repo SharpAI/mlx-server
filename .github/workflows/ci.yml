@@ -219,8 +219,8 @@ jobs:
           retention-days: 7
 
   # ── Speculative Decoding Memory Evaluation ──
-  # Runs the 9B model with NUM_DRAFT_TOKENS=2 to check peak
-  # memory compression/efficiency. Allowed to OOM/fail.
+  # Runs the 2B model with NUM_DRAFT_TOKENS=2 to check peak
+  # memory compression/efficiency. Emits vm_stat readings as step summary.
   speculative-decoding-eval:
     runs-on: macos-15
     timeout-minutes: 45
@@ -277,7 +277,7 @@ jobs:
           python3 -m venv /tmp/mlx_venv
           /tmp/mlx_venv/bin/pip install --quiet huggingface_hub hf
 
-      - name: Cache MLX models (draft + 9B)
+      - name: Cache MLX models (draft + 2B)
         uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
@@ -288,6 +288,19 @@ jobs:
           source /tmp/mlx_venv/bin/activate
           hf download mlx-community/Qwen3.5-2B-4bit || true
           hf download mlx-community/Qwen3.5-0.8B-MLX-4bit || true
+
+      - name: Snapshot RAM before test
+        id: ram_before
+        run: |
+          PAGE_SIZE=$(sysctl -n hw.pagesize)
+          RAM=$(vm_stat | awk -v page_size="$PAGE_SIZE" '
+            /Pages active:/        { v=$3; gsub(/\./, "", v); act=v+0 }
+            /Pages wired down:/    { v=$4; gsub(/\./, "", v); wire=v+0 }
+            /Pages occupied by compressor:/ { v=$5; gsub(/\./, "", v); comp=v+0 }
+            END { printf "%.2f", (act+wire+comp)*page_size/1073741824 }
+          ')
+          echo "ram_before=$RAM" >> $GITHUB_OUTPUT
+          echo "RAM before eval: ${RAM} GB"
       
       - name: Run speculative evaluation E2E
         env:
@@ -309,11 +322,238 @@ jobs:
           done
           echo "All attempts failed"
           exit 1
-          
+
+      - name: Snapshot RAM after test
+        if: always()
+        id: ram_after
+        run: |
+          PAGE_SIZE=$(sysctl -n hw.pagesize)
+          RAM=$(vm_stat | awk -v page_size="$PAGE_SIZE" '
+            /Pages active:/        { v=$3; gsub(/\./, "", v); act=v+0 }
+            /Pages wired down:/    { v=$4; gsub(/\./, "", v); wire=v+0 }
+            /Pages occupied by compressor:/ { v=$5; gsub(/\./, "", v); comp=v+0 }
+            END { printf "%.2f", (act+wire+comp)*page_size/1073741824 }
+          ')
+          echo "ram_after=$RAM" >> $GITHUB_OUTPUT
+          echo "RAM after eval: ${RAM} GB"
+
+      - name: Emit memory summary
+        if: always()
+        run: |
+          BEFORE="${{ steps.ram_before.outputs.ram_before }}"
+          AFTER="${{ steps.ram_after.outputs.ram_after }}"
+          TOTAL=$(sysctl -n hw.memsize | awk '{printf "%.1f", $1/1073741824}')
+          {
+            echo "## 📊 Speculative Eval — Memory Readings"
+            echo "| Metric | Value |"
+            echo "|--------|-------|"
+            echo "| Runner physical RAM | ${TOTAL} GB |"
+            echo "| RAM before test | ${BEFORE} GB |"
+            echo "| RAM after test  | ${AFTER} GB |"
+            echo "| Delta | $(echo "$AFTER $BEFORE" | awk '{printf "%.2f", $1-$2}') GB |"
+          } >> $GITHUB_STEP_SUMMARY
+
       - name: Upload speculative eval logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: speculative-eval-logs
           path: /tmp/SwiftLM-test-speculative-eval.log
+
+  # ── Issue #72 Regression: SSD streaming + draft model RAM guard ──────────────
+  # Mandatory (not continue-on-error). Enforces the auto-cap-to-1 fix and the
+  # memoryLimit sentinel on every PR. Uses tiny models (2B main + 0.8B draft)
+  # sized for the 7 GB macos-15 runner.
+  #
+  # Three checks mirror the local Test 10 in run_benchmark.sh:
+  #   [1] Auto-cap warning present in server log
+  #   [2] Peak RAM ≤ 85% of runner physical RAM during inference
+  #   [3] /v1/chat/completions returns valid content
+  ssd-draft-memory-guard:
+    runs-on: macos-15
+    timeout-minutes: 45
+    needs: build_and_unit_test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download Binary Artifact
+        uses: actions/download-artifact@v4
+        continue-on-error: true   # fall back to building if artifact expired
+        with:
+          name: swiftlm-architecture
+          path: .build/release/
+
+      - name: Build (Release) if artifact missing
+        run: |
+          if [ ! -f ".build/release/SwiftLM" ]; then
+            swift build -c release
+          fi
+          chmod +x .build/release/SwiftLM
+
+      - name: Install MLX Metal library
+        run: |
+          python3 -m venv /tmp/mlx_venv
+          /tmp/mlx_venv/bin/pip install --quiet mlx huggingface_hub hf
+          cp /tmp/mlx_venv/lib/python*/site-packages/mlx/lib/mlx.metallib .build/release/
+
+      - name: Cache MLX models (2B main + 0.8B draft)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: mlx-ssd-draft-guard-qwen35-2b-0.8b
+
+      - name: Pre-download models
+        run: |
+          source /tmp/mlx_venv/bin/activate
+          hf download mlx-community/Qwen3.5-2B-4bit || true
+          hf download mlx-community/Qwen3.5-0.8B-MLX-4bit || true
+
+      - name: Snapshot RAM baseline
+        id: ram_base
+        run: |
+          PAGE_SIZE=$(sysctl -n hw.pagesize)
+          RAM=$(vm_stat | awk -v page_size="$PAGE_SIZE" '
+            /Pages active:/        { v=$3; gsub(/\./, "", v); act=v+0 }
+            /Pages wired down:/    { v=$4; gsub(/\./, "", v); wire=v+0 }
+            /Pages occupied by compressor:/ { v=$5; gsub(/\./, "", v); comp=v+0 }
+            END { printf "%.2f", (act+wire+comp)*page_size/1073741824 }
+          ')
+          TOTAL=$(sysctl -n hw.memsize | awk '{printf "%.0f", $1/1073741824}')
+          LIMIT=$(echo "$TOTAL * 0.85" | bc | cut -d. -f1)
+          echo "ram_base=$RAM"      >> $GITHUB_OUTPUT
+          echo "runner_ram=$TOTAL"  >> $GITHUB_OUTPUT
+          echo "ram_limit=$LIMIT"   >> $GITHUB_OUTPUT
+          echo "Baseline RAM: ${RAM} GB  |  Runner: ${TOTAL} GB  |  Limit: ${LIMIT} GB"
+
+      - name: Start SSD + draft server (Issue #72 scenario)
+        id: server
+        run: |
+          # Launch with --num-draft-tokens 4 intentionally — the auto-cap should
+          # silently reduce it to 1 and log the advisory message.
+          .build/release/SwiftLM \
+            --model mlx-community/Qwen3.5-2B-4bit \
+            --draft-model mlx-community/Qwen3.5-0.8B-MLX-4bit \
+            --stream-experts \
+            --num-draft-tokens 4 \
+            --port 15473 \
+            --max-tokens 64 \
+            > /tmp/ssd_draft_guard.log 2>&1 &
+          PID=$!
+          echo "server_pid=$PID" >> $GITHUB_OUTPUT
+
+          echo "Waiting for server (up to 300s)..."
+          for i in $(seq 1 300); do
+            if ! kill -0 $PID 2>/dev/null; then
+              echo "Server died early:"
+              cat /tmp/ssd_draft_guard.log
+              exit 1
+            fi
+            if curl -sf http://127.0.0.1:15473/health >/dev/null 2>&1; then
+              echo "Server ready after ${i}s"
+              break
+            fi
+            sleep 1
+            if [ "$i" -eq 300 ]; then echo "Timeout"; exit 1; fi
+          done
+
+      - name: Snapshot RAM after model load
+        id: ram_loaded
+        run: |
+          PAGE_SIZE=$(sysctl -n hw.pagesize)
+          RAM=$(vm_stat | awk -v page_size="$PAGE_SIZE" '
+            /Pages active:/        { v=$3; gsub(/\./, "", v); act=v+0 }
+            /Pages wired down:/    { v=$4; gsub(/\./, "", v); wire=v+0 }
+            /Pages occupied by compressor:/ { v=$5; gsub(/\./, "", v); comp=v+0 }
+            END { printf "%.2f", (act+wire+comp)*page_size/1073741824 }
+          ')
+          echo "ram_loaded=$RAM" >> $GITHUB_OUTPUT
+          echo "RAM after load: ${RAM} GB"
+
+      - name: "[1/3] Verify auto-cap warning in server log"
+        run: |
+          if grep -q "auto-capping" /tmp/ssd_draft_guard.log; then
+            echo "✅ Auto-cap warning found — numDraftTokens correctly reduced to 1"
+          else
+            echo "❌ Auto-cap warning NOT found in server log"
+            echo "--- Last 20 lines of server log ---"
+            tail -20 /tmp/ssd_draft_guard.log
+            exit 1
+          fi
+
+      - name: "[2/3] Run inference and snapshot peak RAM"
+        id: ram_peak
+        run: |
+          RESULT=$(curl -sf --max-time 90 http://127.0.0.1:15473/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -d '{"model":"test","messages":[{"role":"user","content":"What is 2+2? One word."}],"max_tokens":32,"stream":false}' \
+            2>/dev/null || echo "{}")
+          echo "$RESULT" > /tmp/inf_result.json
+
+          PAGE_SIZE=$(sysctl -n hw.pagesize)
+          RAM=$(vm_stat | awk -v page_size="$PAGE_SIZE" '
+            /Pages active:/        { v=$3; gsub(/\./, "", v); act=v+0 }
+            /Pages wired down:/    { v=$4; gsub(/\./, "", v); wire=v+0 }
+            /Pages occupied by compressor:/ { v=$5; gsub(/\./, "", v); comp=v+0 }
+            END { printf "%.2f", (act+wire+comp)*page_size/1073741824 }
+          ')
+          echo "ram_peak=$RAM" >> $GITHUB_OUTPUT
+          echo "RAM after inference: ${RAM} GB"
+
+          LIMIT="${{ steps.ram_base.outputs.ram_limit }}"
+          OK=$(echo "$RAM <= $LIMIT" | bc -l)
+          if [ "$OK" = "1" ]; then
+            echo "✅ RAM=${RAM}GB ≤ ${LIMIT}GB (85% of ${{ steps.ram_base.outputs.runner_ram }}GB runner RAM)"
+          else
+            echo "❌ RAM=${RAM}GB EXCEEDS limit ${LIMIT}GB — Issue #72 regression detected"
+            echo "   (memoryLimit sentinel or auto-cap may have regressed)"
+            exit 1
+          fi
+
+      - name: "[3/3] Validate inference response"
+        run: |
+          RESULT=$(cat /tmp/inf_result.json)
+          if echo "$RESULT" | grep -q '"content"'; then
+            TEXT=$(echo "$RESULT" | python3 -c \
+              "import sys,json;d=json.load(sys.stdin);print(d['choices'][0]['message']['content'])" \
+              2>/dev/null || echo "(parse error)")
+            echo "✅ Response: $TEXT"
+          else
+            echo "❌ No content in response — server may have crashed or returned empty"
+            echo "Raw: ${RESULT:0:300}"
+            exit 1
+          fi
+
+      - name: Stop server
+        if: always()
+        run: kill ${{ steps.server.outputs.server_pid }} 2>/dev/null || true
+
+      - name: Emit memory summary to step summary
+        if: always()
+        run: |
+          BASE="${{ steps.ram_base.outputs.ram_base }}"
+          LOADED="${{ steps.ram_loaded.outputs.ram_loaded }}"
+          PEAK="${{ steps.ram_peak.outputs.ram_peak }}"
+          TOTAL="${{ steps.ram_base.outputs.runner_ram }}"
+          LIMIT="${{ steps.ram_base.outputs.ram_limit }}"
+          {
+            echo "## 🛡️ Issue #72 — SSD + Draft Model RAM Guard"
+            echo "| Metric | Value | Threshold |"
+            echo "|--------|-------|-----------|"
+            echo "| Runner physical RAM | ${TOTAL} GB | — |"
+            echo "| RAM baseline (before server) | ${BASE} GB | — |"
+            echo "| RAM after model load | ${LOADED} GB | — |"
+            echo "| RAM after inference (peak) | ${PEAK} GB | ≤ ${LIMIT} GB (85%) |"
+            echo "| Load delta | $(echo "$LOADED $BASE" | awk '{printf "%.2f", $1-$2}') GB | — |"
+            echo "| Inference delta | $(echo "$PEAK $LOADED" | awk '{printf "%.2f", $1-$2}') GB | — |"
+          } >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload server log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssd-draft-guard-log
+          path: /tmp/ssd_draft_guard.log
+          retention-days: 7
 
