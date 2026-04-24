@@ -81,11 +81,11 @@ Model: [`Thump604/DeepSeek-V4-Flash-MLX-Q3-mixed-gs128-affine`](https://huggingf
 
 | Configuration | 512 ctx | 40K ctx |
 |---|---|---|
-| SSD Stream | 4.65 tok/s · 28.4 GB | 0.32 tok/s · 60.5 GB |
-| **SSD + TurboQuant** | **4.78 tok/s · 29.5 GB** | **4.16 tok/s · 40.6 GB** |
-| SSD + 16-Worker Prefetch | 4.43 tok/s · 29.3 GB | 0.32 tok/s · 60.9 GB |
+| SSD Stream | 4.65 tok/s · 16.7 GB RAM | 0.32 tok/s · 12.5 GB RAM |
+| **SSD + TurboQuant** | **4.78 tok/s · 16.8 GB RAM** | **4.16 tok/s · 16.8 GB RAM** |
+| SSD + 16-Worker Prefetch | 4.43 tok/s · 16.6 GB RAM | 0.32 tok/s · 13.6 GB RAM |
 
-> Values shown as `generation speed · GPU memory allocated (virtual, incl. SSD-backed pages)`
+> Values shown as `generation speed · peak physical RAM used` (sampled every 0.5s during prefill + generation). The 126 GB model streams the rest from NVMe SSD.
 
 **Key takeaways:**
 - 🏆 **SSD + TurboQuant dominates at long context** — 4.16 tok/s at 40K vs 0.32 tok/s for plain SSD Stream (**13× faster**), with 33% lower GPU allocation (40.6 GB vs 60.5 GB).
