@@ -88,9 +88,9 @@ Model: [`Thump604/DeepSeek-V4-Flash-MLX-Q3-mixed-gs128-affine`](https://huggingf
 > Values shown as `generation speed · peak physical RAM used` (sampled every 0.5s during prefill + generation). The 126 GB model streams the rest from NVMe SSD.
 
 **Key takeaways:**
-- 🏆 **SSD + TurboQuant dominates at long context** — 4.16 tok/s at 40K vs 0.32 tok/s for plain SSD Stream (**13× faster**), with 33% lower GPU allocation (40.6 GB vs 60.5 GB).
+- 🏆 **SSD + TurboQuant dominates at long context** — 4.16 tok/s at 40K vs 0.32 tok/s for plain SSD Stream (**13× faster**). TurboQuant compresses the KV cache so far fewer layers need to stream from SSD per token.
 - At 512-token context all configurations perform similarly (~4.4–4.8 tok/s); TurboQuant's advantage is KV-cache compression at long context.
-- Peak physical RAM (GPU InUse) stays ≤ 17 GB across all configurations — the rest streams from NVMe SSD.
+- Peak physical RAM stays ≤ 17 GB across all configurations — the 126 GB model streams the rest from NVMe SSD.
 
 ---
 
