@@ -80,26 +80,6 @@ if [ ! -f "$IMG_PATH" ] || [ ! -f "$AUDIO_PATH" ]; then
     fail "Required fixture assets not found in tests/fixtures/omni/"
 fi
 
-# Pre-flight: skip if available RAM is too low for Gemma4 omni (needs ~5.2GB model + headroom).
-# On a 7.5GB runner, after other jobs have run, swap-assisted inference can hit Metal GPU timeouts.
-AVAILABLE_GB=$(python3 -c "
-import subprocess, re
-out = subprocess.check_output(['vm_stat']).decode()
-page_size = int(re.search(r'page size of (\d+)', out).group(1))
-pages_free = int(re.search(r'Pages free:\s+(\d+)', out).group(1))
-pages_inactive = int(re.search(r'Pages inactive:\s+(\d+)', out).group(1))
-gb = (pages_free + pages_inactive) * page_size / 1e9
-print(f'{gb:.1f}')
-" 2>/dev/null || echo "0")
-MIN_RAM_GB=2.5
-if python3 -c "import sys; sys.exit(0 if float('$AVAILABLE_GB') >= $MIN_RAM_GB else 1)" 2>/dev/null; then
-    log "RAM preflight: ${AVAILABLE_GB}GB available — proceeding"
-else
-    log "⚠️  RAM preflight: only ${AVAILABLE_GB}GB available (need ${MIN_RAM_GB}GB). Skipping omni test to avoid Metal GPU timeout."
-    exit 0
-fi
-
-
 BASE64_IMG=$(base64 -i "$IMG_PATH" | tr -d '\n')
 BASE64_AUDIO=$(base64 -i "$AUDIO_PATH" | tr -d '\n')
 
