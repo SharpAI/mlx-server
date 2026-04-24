@@ -387,12 +387,12 @@ public class DeepseekV3DFlashModel: Module, LLMModel, KVCacheDimensionProvider, 
     public var kvHeads: [Int] = []
 
     private let args: DSV3Config
-    private let inner: DSV3ModelInner
+    @ModuleInfo(key: "model") private var inner: DSV3ModelInner
     @ModuleInfo(key: "lm_head") var lmHead: Linear
 
     init(_ args: DSV3Config) {
         self.args = args
-        inner = DSV3ModelInner(config: args)
+        _inner.wrappedValue = DSV3ModelInner(config: args)
         _lmHead.wrappedValue = Linear(args.hiddenSize, args.vocabSize, bias: false)
     }
 

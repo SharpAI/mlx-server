@@ -518,7 +518,7 @@ private class KimiLinearModelInner: Module, LayerPartitionable {
 
     @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding
     let layers: [KimiDecoderLayer]
-    let norm: RMSNorm
+    @ModuleInfo(key: "norm") var norm: RMSNorm
     let attnLayerIdx: Int  // first MLA (full-attention) layer index
 
     init(_ args: KimiLinearConfiguration) {
@@ -526,7 +526,7 @@ private class KimiLinearModelInner: Module, LayerPartitionable {
         _embedTokens.wrappedValue = Embedding(
             embeddingCount: args.vocabSize, dimensions: args.hiddenSize)
         layers = (0 ..< args.numHiddenLayers).map { KimiDecoderLayer(args, layerIdx: $0) }
-        norm = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
+        _norm.wrappedValue = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
         let kdaSet = Set(args.linearAttnConfig.kdaLayers)
         attnLayerIdx = (0 ..< args.numHiddenLayers).first { !kdaSet.contains($0 + 1) } ?? 0
     }
@@ -574,7 +574,7 @@ public class KimiLinearDFlashModel: Module, LLMModel, KVCacheDimensionProvider, 
     public let vocabularySize: Int
     public let kvHeads: [Int]
 
-    private let inner: KimiLinearModelInner
+    @ModuleInfo(key: "model") private var inner: KimiLinearModelInner
     private let configuration: KimiLinearConfiguration
 
     @ModuleInfo(key: "lm_head") var lmHead: Linear?
@@ -583,7 +583,7 @@ public class KimiLinearDFlashModel: Module, LLMModel, KVCacheDimensionProvider, 
         configuration = args
         vocabularySize = args.vocabSize
         kvHeads = Array(repeating: 1, count: args.numHiddenLayers)
-        inner = KimiLinearModelInner(args)
+        _inner.wrappedValue = KimiLinearModelInner(args)
         if !args.tieWordEmbeddings {
             _lmHead.wrappedValue = Linear(args.hiddenSize, args.vocabSize, bias: false)
         }
