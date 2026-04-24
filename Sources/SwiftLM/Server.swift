@@ -281,6 +281,9 @@ struct MLXServer: AsyncParsableCommand {
     var dflashBlockSize: Int?
 
     mutating func run() async throws {
+        // Register SwiftLM-owned DFlash model types before any model loading.
+        await registerDFlashModelTypes()
+
         print("[SwiftLM] Loading model: \(model)")
         let modelId = model
 
