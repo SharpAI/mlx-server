@@ -1358,33 +1358,10 @@ func handleChatCompletion(
     var chatMessages: [Chat.Message] = []
     var systemPromptText = ""
     for msg in chatReq.messages {
-        let textContent = msg.textContent
-        let images = msg.extractImages()
-        let audio = msg.extractAudio()
-        switch msg.role {
-        case "system", "developer":
-            chatMessages.append(.system(textContent, images: images, audio: audio))
-            systemPromptText += textContent
-        case "assistant":
-            var formattedToolCalls: [[String: any Sendable]]? = nil
-            if let tc = msg.tool_calls, !tc.isEmpty {
-                formattedToolCalls = tc.enumerated().map { (index, call) in
-                    [
-                        "index": index,
-                        "id": call.id,
-                        "type": call.type,
-                        "function": [
-                            "name": call.function.name,
-                            "arguments": call.function.arguments
-                        ] as [String: any Sendable]
-                    ] as [String: any Sendable]
-                }
-            }
-            chatMessages.append(.assistant(textContent, images: images, audio: audio, toolCalls: formattedToolCalls))
-        case "tool":
-            chatMessages.append(.tool(textContent, toolCallId: msg.tool_call_id))
-        default:
-            chatMessages.append(.user(textContent, images: images, audio: audio))
+        let chatMsg = msg.toChatMessage()
+        chatMessages.append(chatMsg)
+        if chatMsg.role == .system {
+            systemPromptText += chatMsg.content
         }
     }
 
@@ -2703,6 +2680,38 @@ struct ChatCompletionRequest: Decodable {
                     print("[Server] Fatal Base64 parse error for audio data!")
                 }
                 return nil
+            }
+        }
+
+        /// Convert OpenAI JSON spec message to internal Chat.Message
+        func toChatMessage() -> Chat.Message {
+            let text = textContent
+            let imgs = extractImages()
+            let aud = extractAudio()
+            
+            switch role {
+            case "system", "developer":
+                return .system(text, images: imgs, audio: aud)
+            case "assistant":
+                var formattedToolCalls: [[String: any Sendable]]? = nil
+                if let tc = tool_calls, !tc.isEmpty {
+                    formattedToolCalls = tc.enumerated().map { (index, call) in
+                        [
+                            "index": index,
+                            "id": call.id,
+                            "type": call.type,
+                            "function": [
+                                "name": call.function.name,
+                                "arguments": call.function.arguments
+                            ] as [String: any Sendable]
+                        ] as [String: any Sendable]
+                    }
+                }
+                return .assistant(text, images: imgs, audio: aud, toolCalls: formattedToolCalls)
+            case "tool":
+                return .tool(text, toolCallId: tool_call_id)
+            default:
+                return .user(text, images: imgs, audio: aud)
             }
         }
     }
