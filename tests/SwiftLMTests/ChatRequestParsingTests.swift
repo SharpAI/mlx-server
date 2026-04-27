@@ -11,7 +11,7 @@ final class ChatRequestParsingTests: XCTestCase {
         return try JSONDecoder().decode(ChatCompletionRequest.self, from: data)
     }
 
-    // MARK: - Helper: replicate the exact mapping logic from handleChatCompletion (lines 1368-1382)
+    // MARK: - Helper: replicate the exact mapping logic from handleChatCompletion
     // This mirrors the production code so the test locks down current behavior.
 
     private func mapAssistantToolCalls(_ msg: ChatCompletionRequest.Message) -> [[String: any Sendable]]? {
@@ -295,11 +295,11 @@ final class ChatRequestParsingTests: XCTestCase {
                         "name": "get_weather",
                         "description": "Get current weather for a city",
                         "parameters": {
-                            "type": { "type": "object" },
+                            "type": "object",
                             "properties": {
-                                "type": "object",
                                 "city": { "type": "string" }
-                            }
+                            },
+                            "required": ["city"]
                         }
                     }
                 }
