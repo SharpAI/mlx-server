@@ -1,4 +1,4 @@
-// SettingsView.swift — Inference + appearance settings (iOS tab or macOS sheet)
+// SettingsView.swift — Full SwiftLM parameter dashboard + console log (iOS tab or macOS sheet)
 import SwiftUI
 #if canImport(MLXInferenceCore)
 import MLXInferenceCore
@@ -7,10 +7,18 @@ import MLXInferenceCore
 struct SettingsView: View {
     @ObservedObject var viewModel: ChatViewModel
     @EnvironmentObject private var appearance: AppearanceStore
+    @EnvironmentObject private var engine: InferenceEngine
+    @EnvironmentObject private var server: ServerManager
     @Environment(\.dismiss) private var dismiss
 
     /// When true, the view is embedded as a tab (no Done button on iOS)
     var isTab: Bool = false
+
+    @State private var selectedTab: SettingsTab = .generation
+    @State private var draftServerConfiguration = ServerStartupConfiguration.load()
+    @State private var showRestartNotification = false
+    @State private var serverSaveMessage = "Server settings saved"
+    @State private var restartNotificationRequiresAction = false
 
     // iOS-specific: performance mode toggle (read from UserDefaults)
     @AppStorage("swiftlm.performanceMode") private var performanceMode: Bool = false
@@ -19,156 +27,482 @@ struct SettingsView: View {
         Double(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024)
     }
 
+    enum SettingsTab: String, CaseIterable {
+        case generation = "Generation"
+        case engine = "Engine"
+        case console = "Console"
+        case about = "About"
+
+        var icon: String {
+            switch self {
+            case .generation: return "slider.horizontal.3"
+            case .engine:     return "cpu"
+            case .console:    return "terminal"
+            case .about:      return "info.circle"
+            }
+        }
+    }
+
     var body: some View {
-        ZStack {
-            SwiftBuddyTheme.background.ignoresSafeArea()
+        NavigationStack {
+            ZStack {
+                SwiftBuddyTheme.background.ignoresSafeArea()
 
-            Form {
-                // ── System Engine ─────────────────────────────────────────────
-                Section {
-                    Button {
-                        NotificationCenter.default.post(name: .showModelPicker, object: nil)
-                        dismiss()
-                    } label: {
-                        HStack {
-                            Label("Model Configuration", systemImage: "cpu.fill")
-                                .foregroundStyle(SwiftBuddyTheme.textPrimary)
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .foregroundStyle(SwiftBuddyTheme.textSecondary)
-                        }
-                    }
-                    .buttonStyle(.plain)
+                VStack(spacing: 0) {
+                    // ── Tab Picker ──────────────────────────────────────────
+                    tabPicker
+                        .padding(.horizontal, 16)
+                        .padding(.top, 12)
+                        .padding(.bottom, 8)
 
-                    Button {
-                        NotificationCenter.default.post(name: .showTextIngestion, object: nil)
-                        dismiss()
-                    } label: {
-                        HStack {
-                            Label("Text Ingestion Miner", systemImage: "hammer.fill")
-                                .foregroundStyle(SwiftBuddyTheme.textPrimary)
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .foregroundStyle(SwiftBuddyTheme.textSecondary)
-                        }
+                    // ── Tab Content ─────────────────────────────────────────
+                    switch selectedTab {
+                    case .generation:
+                        generationTab
+                    case .engine:
+                        engineTab
+                    case .console:
+                        consoleTab
+                    case .about:
+                        aboutTab
                     }
-                    .buttonStyle(.plain)
+                }
+            }
+            .navigationTitle("SwiftLM Settings")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(isTab ? .large : .inline)
+            .toolbarBackground(SwiftBuddyTheme.background.opacity(0.90), for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            #endif
+            .toolbar {
+                if !isTab {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { dismiss() }
+                            .foregroundStyle(SwiftBuddyTheme.accent)
+                    }
+                }
+            }
+            .overlay(alignment: .top) {
+                if showRestartNotification {
+                    restartNotificationBanner
+                        .padding(.horizontal, 16)
+                        .padding(.top, 12)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .onAppear {
+                draftServerConfiguration = server.startupConfiguration
+            }
+            #if os(macOS)
+            .frame(minWidth: 520, minHeight: 580)
+            #endif
+        }
+    }
 
-                    Button {
-                        NotificationCenter.default.post(name: .showModelManagement, object: nil)
-                        dismiss()
-                    } label: {
-                        HStack {
-                            Label("Manage Downloaded Models", systemImage: "externaldrive.badge.minus")
-                                .foregroundStyle(SwiftBuddyTheme.textPrimary)
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .foregroundStyle(SwiftBuddyTheme.textSecondary)
-                        }
-                    }
-                    .buttonStyle(.plain)
+    // MARK: — Tab Picker
 
-                    Button {
-                        NotificationCenter.default.post(name: .showPersonaDiscovery, object: nil)
-                        dismiss()
-                    } label: {
-                        HStack {
-                            Label("Discover Personas", systemImage: "person.crop.circle.badge.plus")
-                                .foregroundStyle(SwiftBuddyTheme.textPrimary)
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .foregroundStyle(SwiftBuddyTheme.textSecondary)
-                        }
+    private var tabPicker: some View {
+        HStack(spacing: 0) {
+            ForEach(SettingsTab.allCases, id: \.self) { tab in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { selectedTab = tab }
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: tab.icon)
+                            .font(.system(size: 16, weight: .medium))
+                        Text(tab.rawValue)
+                            .font(.caption2.weight(.semibold))
                     }
-                    .buttonStyle(.plain)
-                    
-                    HStack(spacing: 6) {
-                        Label("API Server", systemImage: "network")
-                            .foregroundStyle(SwiftBuddyTheme.textPrimary)
-                        Spacer()
-                        Circle()
-                            .fill(Color.green)
-                            .frame(width: 8, height: 8)
-                        Text("Port 8080")
-                            .font(.caption)
-                            .foregroundStyle(.green)
-                    }
-                    .padding(.vertical, 4)
-                } header: {
-                    sectionLabel("System Engine", icon: "server.rack")
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(
+                        selectedTab == tab
+                            ? SwiftBuddyTheme.accent.opacity(0.15)
+                            : Color.clear
+                    )
+                    .foregroundStyle(
+                        selectedTab == tab
+                            ? SwiftBuddyTheme.accent
+                            : SwiftBuddyTheme.textTertiary
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(4)
+        .background(SwiftBuddyTheme.surface.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(Color.white.opacity(0.06), lineWidth: 1)
+        )
+    }
+
+    // MARK: — Generation Tab
+
+    private var generationTab: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                parameterCard("Sampling") {
+                    sliderRow(
+                        label: "Temperature", icon: "thermometer.medium",
+                        value: Binding(
+                            get: { Double(viewModel.config.temperature) },
+                            set: { viewModel.config.temperature = Float($0) }
+                        ),
+                        range: 0...2, step: 0.05, format: "%.2f",
+                        tint: SwiftBuddyTheme.warning,
+                        hint: "Higher = more creative, lower = more focused"
+                    )
+                    sliderRow(
+                        label: "Top P", icon: "chart.bar.xaxis",
+                        value: Binding(
+                            get: { Double(viewModel.config.topP) },
+                            set: { viewModel.config.topP = Float($0) }
+                        ),
+                        range: 0...1, step: 0.05, format: "%.2f",
+                        tint: SwiftBuddyTheme.accentSecondary,
+                        hint: "Nucleus sampling: cumulative probability threshold"
+                    )
+                    sliderRow(
+                        label: "Top K", icon: "line.3.horizontal.decrease.circle",
+                        value: Binding(
+                            get: { Double(viewModel.config.topK) },
+                            set: { viewModel.config.topK = Int($0) }
+                        ),
+                        range: 1...200, step: 1, format: "%.0f",
+                        tint: SwiftBuddyTheme.accent,
+                        hint: "Limit sampling to top K candidates"
+                    )
+                    sliderRow(
+                        label: "Min P", icon: "arrow.down.to.line",
+                        value: Binding(
+                            get: { Double(viewModel.config.minP) },
+                            set: { viewModel.config.minP = Float($0) }
+                        ),
+                        range: 0...0.5, step: 0.01, format: "%.2f",
+                        tint: SwiftBuddyTheme.success,
+                        hint: "Minimum probability filter (0 = disabled)"
+                    )
                 }
 
-                // ── Generation ────────────────────────────────────────────────
-                Section {
-                    temperatureRow
-                    maxTokensRow
-                    topPRow
-                    repetitionPenaltyRow
-                } header: {
-                    sectionLabel("Generation", icon: "slider.horizontal.3")
+                parameterCard("Output") {
+                    sliderRow(
+                        label: "Max Tokens", icon: "text.word.spacing",
+                        value: Binding(
+                            get: { Double(viewModel.config.maxTokens) },
+                            set: { viewModel.config.maxTokens = Int($0) }
+                        ),
+                        range: 128...max(16384.0, Double(engine.maxContextWindow)), step: 128, format: "%.0f",
+                        tint: SwiftBuddyTheme.accent
+                    )
+                    sliderRow(
+                        label: "Repetition Penalty", icon: "repeat.circle",
+                        value: Binding(
+                            get: { Double(viewModel.config.repetitionPenalty) },
+                            set: { viewModel.config.repetitionPenalty = Float($0) }
+                        ),
+                        range: 1.0...2.0, step: 0.01, format: "%.2f",
+                        tint: SwiftBuddyTheme.success,
+                        hint: "Higher = less repeating, 1.0 = disabled"
+                    )
                 }
 
-                // ── Advanced ──────────────────────────────────────────────────
-                Section {
-                    thinkingToggle
-                } header: {
-                    sectionLabel("Advanced", icon: "gearshape.2")
+                parameterCard("Reasoning") {
+                    toggleRow(
+                        label: "Thinking Mode", icon: "brain.head.profile",
+                        isOn: $viewModel.config.enableThinking,
+                        tint: SwiftBuddyTheme.accentSecondary,
+                        hint: "Step-by-step reasoning for Qwen3.5, DeepSeek-R1"
+                    )
                 }
 
-                // ── Appearance ────────────────────────────────────────────────
-                Section {
-                    appearancePicker
-                } header: {
-                    sectionLabel("Appearance", icon: "paintpalette")
-                }
-
-                // ── System Prompt ─────────────────────────────────────────────
-                Section {
+                parameterCard("System Prompt") {
                     TextEditor(text: $viewModel.systemPrompt)
-                        .frame(minHeight: 88)
-                        .font(.callout)
+                        .frame(minHeight: 80)
+                        .font(.callout.monospaced())
                         .foregroundStyle(SwiftBuddyTheme.textPrimary)
                         .scrollContentBackground(.hidden)
-                        .background(Color.clear)
-                } header: {
-                    sectionLabel("System Prompt", icon: "text.bubble")
-                } footer: {
+                        .padding(8)
+                        .background(SwiftBuddyTheme.background.opacity(0.5))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
                     Text("Injected as the system message before every conversation.")
-                        .font(.caption)
+                        .font(.caption2)
                         .foregroundStyle(SwiftBuddyTheme.textTertiary)
                 }
 
-                // ── Performance (iOS-only) ─────────────────────────────────────
+                // Reset button
+                Button(role: .destructive) {
+                    viewModel.config = .default
+                    viewModel.systemPrompt = ""
+                } label: {
+                    HStack {
+                        Image(systemName: "arrow.counterclockwise")
+                        Text("Reset to Defaults")
+                    }
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(SwiftBuddyTheme.error)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(SwiftBuddyTheme.error.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 16)
+
+                Spacer(minLength: 20)
+            }
+            .padding(.top, 8)
+        }
+    }
+
+    // MARK: — Engine Tab
+
+    private var engineTab: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                parameterCard("Local API Server") {
+                    HStack {
+                        Label(server.isOnline ? "Online" : "Offline", systemImage: "network")
+                            .foregroundStyle(server.isOnline ? SwiftBuddyTheme.success : SwiftBuddyTheme.textSecondary)
+                            .font(.callout.weight(.medium))
+                        Spacer()
+                        Text("\(server.host):\(server.port)")
+                            .foregroundStyle(SwiftBuddyTheme.textSecondary)
+                            .font(.callout.monospacedDigit())
+                    }
+
+                    toggleRow(
+                        label: "Start Server on Launch", icon: "power.circle",
+                        isOn: $draftServerConfiguration.autoStart,
+                        tint: SwiftBuddyTheme.success
+                    )
+
+                    textFieldRow(
+                        label: "Host", icon: "network",
+                        text: $draftServerConfiguration.host,
+                        placeholder: "127.0.0.1"
+                    )
+
+                    stepperRow(
+                        label: "Port", icon: "number.circle",
+                        value: $draftServerConfiguration.port,
+                        range: 1...65_535
+                    )
+
+                    stepperRow(
+                        label: "Parallel Slots", icon: "square.stack.3d.up",
+                        value: $draftServerConfiguration.parallelSlots,
+                        range: 1...16
+                    )
+
+                    textFieldRow(
+                        label: "CORS Origin", icon: "globe",
+                        text: $draftServerConfiguration.corsOrigin,
+                        placeholder: "Optional"
+                    )
+
+                    secureFieldRow(
+                        label: "API Key", icon: "key",
+                        text: $draftServerConfiguration.apiKey,
+                        placeholder: "Optional"
+                    )
+
+                    HStack(spacing: 10) {
+                        Button {
+                            saveServerConfiguration()
+                        } label: {
+                            Label("Save Server Settings", systemImage: "square.and.arrow.down")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(SwiftBuddyTheme.accent)
+                        .disabled(draftServerConfiguration.normalized == server.startupConfiguration)
+
+                        if server.restartRequired {
+                            Button {
+                                restartServer()
+                            } label: {
+                                Label("Restart", systemImage: "arrow.clockwise")
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                }
+
+                parameterCard("Memory Optimization") {
+                    toggleRow(
+                        label: "TurboQuant KV Cache", icon: "bolt.circle",
+                        isOn: $viewModel.config.turboKV,
+                        tint: SwiftBuddyTheme.warning,
+                        hint: "3-bit KV compression — recommended for 100k+ context windows"
+                    )
+
+                    if viewModel.config.turboKV {
+                        // KV Bits picker
+                        HStack {
+                            Label("KV Bits", systemImage: "number.circle")
+                                .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                                .font(.callout)
+                            Spacer()
+                            Picker("", selection: Binding(
+                                get: { viewModel.config.kvBits ?? 0 },
+                                set: { viewModel.config.kvBits = $0 == 0 ? nil : $0 }
+                            )) {
+                                Text("Auto").tag(0)
+                                Text("4-bit").tag(4)
+                                Text("8-bit").tag(8)
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 200)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+
+                parameterCard("Expert Streaming (MoE)") {
+                    toggleRow(
+                        label: "SSD Expert Streaming", icon: "arrow.triangle.swap",
+                        isOn: $viewModel.config.streamExperts,
+                        tint: SwiftBuddyTheme.accent,
+                        hint: "Flash-MoE: stream expert weights from NVMe — enables 122B models on 16GB"
+                    )
+                }
+
+                parameterCard("Prefill") {
+                    sliderRow(
+                        label: "Prefill Chunk Size", icon: "rectangle.split.3x3",
+                        value: Binding(
+                            get: { Double(viewModel.config.prefillSize) },
+                            set: { viewModel.config.prefillSize = Int($0) }
+                        ),
+                        range: 64...2048, step: 64, format: "%.0f",
+                        tint: SwiftBuddyTheme.accentSecondary,
+                        hint: "Lower values prevent GPU timeout on large models"
+                    )
+                }
+
+                parameterCard("Appearance") {
+                    HStack {
+                        Label("Color Scheme", systemImage: "paintpalette")
+                            .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                            .font(.callout)
+                        Spacer()
+                    }
+                    Picker("", selection: $appearance.preference) {
+                        HStack { Image(systemName: "moon.fill"); Text("Dark") }.tag("dark")
+                        HStack { Image(systemName: "sun.max.fill"); Text("Light") }.tag("light")
+                        HStack { Image(systemName: "circle.lefthalf.filled"); Text("System") }.tag("system")
+                    }
+                    .pickerStyle(.segmented)
+                    .tint(SwiftBuddyTheme.accent)
+                }
+
                 #if os(iOS)
-                Section {
-                    performanceModeRow
-                    autoOffloadRow
-                } header: {
-                    sectionLabel("Performance", icon: "cpu")
-                } footer: {
-                    Text("Performance Mode loosens the RAM budget from 40% to 55%, allowing larger models on your \(String(format: "%.0f GB", ramGB)) device.")
-                        .font(.caption)
-                        .foregroundStyle(SwiftBuddyTheme.textTertiary)
+                parameterCard("iOS Performance") {
+                    toggleRow(
+                        label: "Performance Mode", icon: "bolt.fill",
+                        isOn: $performanceMode,
+                        tint: SwiftBuddyTheme.accent,
+                        hint: "Use 55% RAM budget (vs. 40%) — enables larger models on \(String(format: "%.0f GB", ramGB)) device"
+                    )
+                    toggleRow(
+                        label: "Auto-Unload in Background", icon: "iphone.slash",
+                        isOn: Binding(
+                            get: { UserDefaults.standard.bool(forKey: "swiftlm.autoOffload") == false
+                                    ? true
+                                    : UserDefaults.standard.bool(forKey: "swiftlm.autoOffload") },
+                            set: { UserDefaults.standard.set($0, forKey: "swiftlm.autoOffload") }
+                        ),
+                        tint: SwiftBuddyTheme.success,
+                        hint: "Frees GPU memory when the app backgrounds"
+                    )
                 }
                 #endif
 
-                // ── Reset ─────────────────────────────────────────────────────
-                Section {
-                    Button(role: .destructive) {
-                        viewModel.config = .default
-                        viewModel.systemPrompt = ""
-                    } label: {
-                        HStack {
-                            Spacer()
-                            Label("Reset to Defaults", systemImage: "arrow.counterclockwise")
-                                .foregroundStyle(SwiftBuddyTheme.error)
-                            Spacer()
+                Spacer(minLength: 20)
+            }
+            .padding(.top, 8)
+        }
+    }
+
+    // MARK: — Console Tab
+
+    private var consoleTab: some View {
+        VStack(spacing: 0) {
+            // Console header
+            HStack {
+                Image(systemName: "terminal")
+                    .foregroundStyle(SwiftBuddyTheme.accent)
+                Text("SwiftLM Console")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                Spacer()
+                Button {
+                    ConsoleLog.shared.clear()
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.caption)
+                        .foregroundStyle(SwiftBuddyTheme.textTertiary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+
+            Divider().background(SwiftBuddyTheme.divider)
+
+            // Console output
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(ConsoleLog.shared.entries) { entry in
+                            consoleEntryRow(entry)
+                                .id(entry.id)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                }
+                .onChange(of: ConsoleLog.shared.entries.count) {
+                    if let last = ConsoleLog.shared.entries.last {
+                        withAnimation {
+                            proxy.scrollTo(last.id, anchor: .bottom)
                         }
                     }
                 }
+            }
+            .background(Color.black.opacity(0.3))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .padding(.horizontal, 12)
+            .padding(.bottom, 12)
+        }
+    }
 
-                // ── About ─────────────────────────────────────────────────────
-                Section {
+    private func consoleEntryRow(_ entry: ConsoleLog.Entry) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Text(entry.timestamp)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(SwiftBuddyTheme.textTertiary)
+            Image(systemName: entry.level.icon)
+                .font(.system(size: 9))
+                .foregroundStyle(entry.level.color)
+                .frame(width: 12)
+            Text(entry.message)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(entry.level.textColor)
+                .textSelection(.enabled)
+        }
+        .padding(.vertical, 1)
+    }
+
+    // MARK: — About Tab
+
+    private var aboutTab: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                parameterCard("System Info") {
                     aboutRow("SwiftBuddy Chat", value: "1.0")
                     aboutRow("Engine", value: "MLX Swift")
                     aboutRow("Backend", value: "Metal GPU")
@@ -180,207 +514,346 @@ struct SettingsView: View {
                         #endif
                     }())
                     aboutRow("RAM", value: String(format: "%.0f GB", ramGB))
-                } header: {
-                    sectionLabel("About", icon: "info.circle")
+                }
+
+                parameterCard("Active Model") {
+                    switch engine.state {
+                    case .ready(let modelId):
+                        aboutRow("Model", value: modelId.components(separatedBy: "/").last ?? modelId)
+                    case .idle:
+                        aboutRow("Model", value: "None loaded")
+                    default:
+                        aboutRow("Model", value: engine.state.shortLabel)
+                    }
+                    if let tokens = engine.activeContextTokens as Int? {
+                        aboutRow("Context Tokens", value: "\(tokens)")
+                    }
+                }
+
+                parameterCard("Quick Actions") {
+                    Button {
+                        NotificationCenter.default.post(name: .showModelManagement, object: nil)
+                        dismiss()
+                    } label: {
+                        quickActionRow("Model Configuration", icon: "cpu.fill")
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        NotificationCenter.default.post(name: .showTextIngestion, object: nil)
+                        dismiss()
+                    } label: {
+                        quickActionRow("Text Ingestion Miner", icon: "hammer.fill")
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        NotificationCenter.default.post(name: .showModelManagement, object: nil)
+                        dismiss()
+                    } label: {
+                        quickActionRow("Manage Downloaded Models", icon: "externaldrive.badge.minus")
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Spacer(minLength: 20)
+            }
+            .padding(.top, 8)
+        }
+    }
+
+    // MARK: — Reusable Components
+
+    private var restartNotificationBanner: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "arrow.clockwise.circle.fill")
+                .foregroundStyle(SwiftBuddyTheme.warning)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(serverSaveMessage)
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                Text(restartNotificationRequiresAction
+                     ? "Restart the local API server to apply startup changes."
+                     : "Changes will apply the next time the server starts.")
+                    .font(.caption)
+                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
+            }
+            Spacer()
+            if restartNotificationRequiresAction {
+                Button("Restart") {
+                    restartServer()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .tint(SwiftBuddyTheme.accent)
+            }
+            Button {
+                withAnimation { showRestartNotification = false }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.bold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(SwiftBuddyTheme.textTertiary)
+        }
+        .padding(12)
+        .background(SwiftBuddyTheme.surface.opacity(0.96))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(SwiftBuddyTheme.warning.opacity(0.45), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.18), radius: 14, y: 6)
+    }
+
+    private func saveServerConfiguration() {
+        let changed = server.saveStartupConfiguration(draftServerConfiguration)
+        draftServerConfiguration = server.startupConfiguration
+        if server.restartRequired {
+            serverSaveMessage = changed ? "Server settings saved" : "Server restart required"
+            restartNotificationRequiresAction = true
+            withAnimation(.easeInOut(duration: 0.2)) {
+                showRestartNotification = true
+            }
+        } else {
+            serverSaveMessage = "Server settings saved"
+            restartNotificationRequiresAction = false
+            withAnimation(.easeInOut(duration: 0.2)) {
+                showRestartNotification = true
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    showRestartNotification = false
                 }
             }
-            #if os(macOS)
-            .formStyle(.grouped)
-            #endif
-            .scrollContentBackground(.hidden)
         }
-        .navigationTitle("Settings")
-        #if os(iOS)
-        .navigationBarTitleDisplayMode(isTab ? .large : .inline)
-        .toolbarBackground(SwiftBuddyTheme.background.opacity(0.90), for: .navigationBar)
-        .toolbarBackground(.visible, for: .navigationBar)
-        #endif
-        .toolbar {
-            if !isTab {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                        .foregroundStyle(SwiftBuddyTheme.accent)
+    }
+
+    private func restartServer() {
+        server.restart(engine: engine)
+        serverSaveMessage = "Server restarted"
+        withAnimation(.easeInOut(duration: 0.2)) {
+            showRestartNotification = false
+        }
+    }
+
+    @ViewBuilder
+    private func parameterCard<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title.uppercased())
+                .font(.caption.weight(.bold))
+                .foregroundStyle(SwiftBuddyTheme.textTertiary)
+                .tracking(0.8)
+
+            VStack(alignment: .leading, spacing: 12) {
+                content()
+            }
+            .padding(14)
+            .background(SwiftBuddyTheme.surface.opacity(0.5))
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .strokeBorder(Color.white.opacity(0.06), lineWidth: 1)
+            )
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func sliderRow(
+        label: String, icon: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>, step: Double, format: String,
+        tint: Color, hint: String? = nil
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Label(label, systemImage: icon)
+                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                    .font(.callout)
+                Spacer()
+                Text(String(format: format, value.wrappedValue))
+                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
+                    .monospacedDigit()
+                    .font(.callout.weight(.medium))
+            }
+            Slider(value: value, in: range, step: step)
+                .tint(tint)
+            if let hint = hint {
+                Text(hint)
+                    .font(.caption2)
+                    .foregroundStyle(SwiftBuddyTheme.textTertiary)
+            }
+        }
+    }
+
+    private func toggleRow(
+        label: String, icon: String,
+        isOn: Binding<Bool>,
+        tint: Color, hint: String? = nil
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle(isOn: isOn) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Label(label, systemImage: icon)
+                        .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                        .font(.callout)
+                    if let hint = hint {
+                        Text(hint)
+                            .font(.caption2)
+                            .foregroundStyle(SwiftBuddyTheme.textTertiary)
+                    }
                 }
             }
+            .tint(tint)
         }
-        #if os(macOS)
-        .frame(width: 440, height: 640)
-        #endif
     }
 
-    // MARK: — Row Helpers
+    private func textFieldRow(
+        label: String, icon: String,
+        text: Binding<String>, placeholder: String
+    ) -> some View {
+        HStack(spacing: 12) {
+            Label(label, systemImage: icon)
+                .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                .font(.callout)
+            Spacer()
+            TextField(placeholder, text: text)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 240)
+        }
+    }
 
-    private var temperatureRow: some View {
-        VStack(alignment: .leading, spacing: 4) {
+    private func secureFieldRow(
+        label: String, icon: String,
+        text: Binding<String>, placeholder: String
+    ) -> some View {
+        HStack(spacing: 12) {
+            Label(label, systemImage: icon)
+                .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                .font(.callout)
+            Spacer()
+            SecureField(placeholder, text: text)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 240)
+        }
+    }
+
+    private func stepperRow(
+        label: String, icon: String,
+        value: Binding<Int>, range: ClosedRange<Int>
+    ) -> some View {
+        Stepper(value: value, in: range) {
             HStack {
-                Label("Temperature", systemImage: "thermometer.medium")
+                Label(label, systemImage: icon)
                     .foregroundStyle(SwiftBuddyTheme.textPrimary)
-                Spacer()
-                Text(String(format: "%.2f", viewModel.config.temperature))
-                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
-                    .monospacedDigit()
                     .font(.callout)
-            }
-            Slider(value: Binding(
-                get: { Double(viewModel.config.temperature) },
-                set: { viewModel.config.temperature = Float($0) }
-            ), in: 0...2, step: 0.05)
-            .tint(SwiftBuddyTheme.warning)
-            Text("Higher = more creative, lower = more focused")
-                .font(.caption2)
-                .foregroundStyle(SwiftBuddyTheme.textTertiary)
-        }
-        .padding(.vertical, 2)
-    }
-
-    private var maxTokensRow: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Label("Max Tokens", systemImage: "text.word.spacing")
-                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
                 Spacer()
-                Text("\(viewModel.config.maxTokens)")
+                Text("\(value.wrappedValue)")
                     .foregroundStyle(SwiftBuddyTheme.textSecondary)
-                    .monospacedDigit()
-                    .font(.callout)
-            }
-            Slider(value: Binding(
-                get: { Double(viewModel.config.maxTokens) },
-                set: { viewModel.config.maxTokens = Int($0) }
-            ), in: 128...8192, step: 128)
-            .tint(SwiftBuddyTheme.accent)
-        }
-        .padding(.vertical, 2)
-    }
-
-    private var topPRow: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Label("Top P", systemImage: "chart.bar.xaxis")
-                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
-                Spacer()
-                Text(String(format: "%.2f", viewModel.config.topP))
-                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
-                    .monospacedDigit()
-                    .font(.callout)
-            }
-            Slider(value: Binding(
-                get: { Double(viewModel.config.topP) },
-                set: { viewModel.config.topP = Float($0) }
-            ), in: 0...1, step: 0.05)
-            .tint(SwiftBuddyTheme.accentSecondary)
-        }
-        .padding(.vertical, 2)
-    }
-
-    private var repetitionPenaltyRow: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Label("Repetition Penalty", systemImage: "repeat.circle")
-                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
-                Spacer()
-                Text(String(format: "%.2f", viewModel.config.repetitionPenalty))
-                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
-                    .monospacedDigit()
-                    .font(.callout)
-            }
-            Slider(value: Binding(
-                get: { Double(viewModel.config.repetitionPenalty) },
-                set: { viewModel.config.repetitionPenalty = Float($0) }
-            ), in: 1.0...2.0, step: 0.01)
-            .tint(SwiftBuddyTheme.success)
-            Text("Higher = less repeating, 1.0 = disabled (can cause echoing)")
-                .font(.caption2)
-                .foregroundStyle(SwiftBuddyTheme.textTertiary)
-        }
-        .padding(.vertical, 2)
-    }
-
-    private var thinkingToggle: some View {
-        Toggle(isOn: $viewModel.config.enableThinking) {
-            VStack(alignment: .leading, spacing: 2) {
-                Label("Thinking Mode", systemImage: "brain.head.profile")
-                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
-                Text("Step-by-step reasoning for Qwen3, DeepSeek-R1, and compatible models")
-                    .font(.caption)
-                    .foregroundStyle(SwiftBuddyTheme.textTertiary)
+                    .font(.callout.monospacedDigit())
             }
         }
-        .tint(SwiftBuddyTheme.accentSecondary)
     }
-
-    private var appearancePicker: some View {
-        Picker("Color Scheme", selection: $appearance.preference) {
-            HStack {
-                Image(systemName: "moon.fill")
-                Text("Dark")
-            }.tag("dark")
-
-            HStack {
-                Image(systemName: "sun.max.fill")
-                Text("Light")
-            }.tag("light")
-
-            HStack {
-                Image(systemName: "circle.lefthalf.filled")
-                Text("System")
-            }.tag("system")
-        }
-        .pickerStyle(.segmented)
-        .tint(SwiftBuddyTheme.accent)
-    }
-
-    #if os(iOS)
-    private var performanceModeRow: some View {
-        Toggle(isOn: $performanceMode) {
-            VStack(alignment: .leading, spacing: 2) {
-                Label("Performance Mode", systemImage: "bolt.fill")
-                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
-                Text("Use 55% RAM budget (vs. 40%) — enables more models on 6 GB devices")
-                    .font(.caption)
-                    .foregroundStyle(SwiftBuddyTheme.textTertiary)
-            }
-        }
-        .tint(SwiftBuddyTheme.accent)
-    }
-
-    @State private var tempEngine: InferenceEngine? = nil
-
-    private var autoOffloadRow: some View {
-        // We can't easily get the engine here without prop drilling,
-        // so we persist via UserDefaults and InferenceEngine reads it on next launch.
-        Toggle(isOn: Binding(
-            get: { UserDefaults.standard.bool(forKey: "swiftlm.autoOffload") == false
-                    ? true  // default true
-                    : UserDefaults.standard.bool(forKey: "swiftlm.autoOffload") },
-            set: { UserDefaults.standard.set($0, forKey: "swiftlm.autoOffload") }
-        )) {
-            VStack(alignment: .leading, spacing: 2) {
-                Label("Auto-Unload in Background", systemImage: "iphone.slash")
-                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
-                Text("Frees GPU memory when the app backgrounds (recommended on iPhone)")
-                    .font(.caption)
-                    .foregroundStyle(SwiftBuddyTheme.textTertiary)
-            }
-        }
-        .tint(SwiftBuddyTheme.success)
-    }
-    #endif
 
     private func aboutRow(_ label: String, value: String) -> some View {
         HStack {
             Text(label)
                 .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                .font(.callout)
             Spacer()
             Text(value)
                 .foregroundStyle(SwiftBuddyTheme.textSecondary)
+                .font(.callout.weight(.medium))
         }
     }
 
-    private func sectionLabel(_ title: String, icon: String) -> some View {
-        Label(title, systemImage: icon)
-            .foregroundStyle(SwiftBuddyTheme.textTertiary)
-            .font(.footnote.weight(.semibold))
-            .textCase(.uppercase)
+    private func quickActionRow(_ label: String, icon: String) -> some View {
+        HStack {
+            Label(label, systemImage: icon)
+                .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                .font(.callout)
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.caption2)
+                .foregroundStyle(SwiftBuddyTheme.textTertiary)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+// MARK: — Console Log Service
+
+@Observable
+final class ConsoleLog {
+    static let shared = ConsoleLog()
+
+    struct Entry: Identifiable {
+        let id = UUID()
+        let date: Date
+        let level: Level
+        let message: String
+
+        var timestamp: String {
+            Self.formatter.string(from: date)
+        }
+
+        private static let formatter: DateFormatter = {
+            let f = DateFormatter()
+            f.dateFormat = "HH:mm:ss.SSS"
+            return f
+        }()
+
+        enum Level {
+            case info, warning, error, debug
+
+            var icon: String {
+                switch self {
+                case .info:    return "info.circle.fill"
+                case .warning: return "exclamationmark.triangle.fill"
+                case .error:   return "xmark.circle.fill"
+                case .debug:   return "ant.fill"
+                }
+            }
+
+            var color: Color {
+                switch self {
+                case .info:    return .blue
+                case .warning: return .orange
+                case .error:   return .red
+                case .debug:   return .gray
+                }
+            }
+
+            var textColor: Color {
+                switch self {
+                case .info:    return .white.opacity(0.9)
+                case .warning: return .orange.opacity(0.9)
+                case .error:   return .red.opacity(0.9)
+                case .debug:   return .white.opacity(0.5)
+                }
+            }
+        }
+    }
+
+    private(set) var entries: [Entry] = []
+    private let maxEntries = 500
+
+    func log(_ message: String, level: Entry.Level = .info) {
+        let entry = Entry(date: Date(), level: level, message: message)
+        DispatchQueue.main.async {
+            self.entries.append(entry)
+            if self.entries.count > self.maxEntries {
+                self.entries.removeFirst(self.entries.count - self.maxEntries)
+            }
+        }
+    }
+
+    func info(_ message: String)    { log(message, level: .info) }
+    func warning(_ message: String) { log(message, level: .warning) }
+    func error(_ message: String)   { log(message, level: .error) }
+    func debug(_ message: String)   { log(message, level: .debug) }
+
+    func clear() {
+        entries.removeAll()
     }
 }

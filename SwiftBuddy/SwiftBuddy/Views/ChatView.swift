@@ -12,7 +12,7 @@ struct ChatView: View {
 
     // macOS-only sheet control (iOS: these are tabs)
     var showSettings: Binding<Bool>? = nil
-    var showModelPicker: Binding<Bool>? = nil
+    @State private var showCorruptionRecoveryAlert = false
     @State private var inputText = ""
     @FocusState private var inputFocused: Bool
 
@@ -56,6 +56,29 @@ struct ChatView: View {
         #else
         .toolbar { macOSToolbar }
         #endif
+        .alert(
+            "Model Download Problem",
+            isPresented: $showCorruptionRecoveryAlert,
+            actions: {
+                Button("Delete & Re-download", role: .destructive) {
+                    engine.deleteCorruptedAndRedownload()
+                }
+                Button("Choose Another Model") {
+                    engine.clearCorruptionRecovery()
+                    NotificationCenter.default.post(name: .showModelManagement, object: nil)
+                }
+                Button("Cancel", role: .cancel) {
+                }
+            },
+            message: {
+                Text("The downloaded weights for this model are corrupted or incomplete. Delete the cached files and start a fresh download, or choose a different model.")
+            }
+        )
+        .onChange(of: engine.corruptedModelId) { _, modelId in
+            if modelId != nil {
+                showCorruptionRecoveryAlert = true
+            }
+        }
     }
 
     // MARK: — Message List
@@ -145,6 +168,21 @@ struct ChatView: View {
                     .foregroundStyle(SwiftBuddyTheme.textSecondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 40)
+
+                if engine.corruptedModelId != nil {
+                    Button(role: .destructive) {
+                        engine.deleteCorruptedAndRedownload()
+                    } label: {
+                        Label("Delete Corrupted Model & Re-download", systemImage: "arrow.down.app.fill")
+                            .font(.subheadline.weight(.semibold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(SwiftBuddyTheme.error.opacity(0.15))
+                    .foregroundStyle(SwiftBuddyTheme.error)
+                    .padding(.top, 10)
+                }
             }
 
         case .ready, .generating:
@@ -242,7 +280,33 @@ struct ChatView: View {
             .padding(.vertical, 8)
             .background(SwiftBuddyTheme.surface.opacity(0.90))
         case .error(let msg):
-            bannerRow(icon: "exclamationmark.triangle.fill", text: msg, color: SwiftBuddyTheme.error)
+            if engine.corruptedModelId != nil {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(SwiftBuddyTheme.error)
+                        Text(msg)
+                            .font(.caption)
+                            .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                    }
+                    Button(role: .destructive) {
+                        engine.deleteCorruptedAndRedownload()
+                    } label: {
+                        Label("Delete Corrupted Model & Re-download", systemImage: "arrow.down.app.fill")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(SwiftBuddyTheme.error.opacity(0.2))
+                    .foregroundStyle(SwiftBuddyTheme.error)
+                    .controlSize(.small)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(SwiftBuddyTheme.error.opacity(0.1))
+            } else {
+                bannerRow(icon: "exclamationmark.triangle.fill", text: msg, color: SwiftBuddyTheme.error)
+            }
         case .ready, .generating:
             if engine.maxContextWindow > 0 && !viewModel.messages.isEmpty {
                 HStack {
@@ -427,19 +491,6 @@ struct ChatView: View {
     #if os(macOS)
     @ToolbarContentBuilder
     private var macOSToolbar: some ToolbarContent {
-        ToolbarItem {
-            Menu {
-                Button("No Persona") { viewModel.currentWing = nil }
-                Divider()
-                ForEach(wings) { wing in
-                    Button(wing.name) { viewModel.currentWing = wing.name }
-                }
-            } label: {
-                Image(systemName: viewModel.currentWing == nil ? "brain" : "brain.head.profile")
-                    .foregroundStyle(viewModel.currentWing == nil ? SwiftBuddyTheme.textSecondary : .orange)
-            }
-        }
-        
         ToolbarItem {
             Button { withAnimation { viewModel.clearHistory() } } label: {
                 Label("Clear Chat", systemImage: "trash")

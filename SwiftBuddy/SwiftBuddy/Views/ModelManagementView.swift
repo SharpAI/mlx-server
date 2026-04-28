@@ -11,7 +11,7 @@ struct ModelManagementView: View {
     @State private var showHFSearch = false
     @State private var deletionError: String? = nil
 
-    private var dm: ModelDownloadManager { engine.downloadManager }
+    @EnvironmentObject private var dm: ModelDownloadManager
 
     var body: some View {
         NavigationStack {
@@ -59,6 +59,17 @@ struct ModelManagementView: View {
             }, message: {
                 Text(deletionError ?? "")
             })
+            .safeAreaInset(edge: .bottom) {
+                if let (modelId, progress) = dm.activeDownloads.first {
+                    FloatingDownloadBanner(modelId: modelId, progress: progress)
+                        .padding(.vertical, 8)
+                        .background(
+                            Rectangle()
+                                .fill(SwiftBuddyTheme.background)
+                                .shadow(color: .black.opacity(0.1), radius: 5, y: -2)
+                        )
+                }
+            }
             .sheet(isPresented: $showHFSearch) {
                 NavigationStack {
                     ZStack {
@@ -80,6 +91,18 @@ struct ModelManagementView: View {
                         ToolbarItem(placement: .cancellationAction) {
                             Button("Close") { showHFSearch = false }
                         }
+                    }
+                }
+                .safeAreaInset(edge: .bottom) {
+                    if let (modelId, progress) = dm.activeDownloads.first {
+                        FloatingDownloadBanner(modelId: modelId, progress: progress)
+                            .padding(.vertical, 8)
+                            // Match the background style of the floating banner in chat
+                            .background(
+                                Rectangle()
+                                    .fill(SwiftBuddyTheme.background)
+                                    .shadow(color: .black.opacity(0.1), radius: 5, y: -2)
+                            )
                     }
                 }
             }

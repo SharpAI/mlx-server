@@ -6,7 +6,8 @@ import SwiftData
 
 struct InspectorView: View {
     @EnvironmentObject private var engine: InferenceEngine
-    @Binding var showModelPicker: Bool
+    @EnvironmentObject private var server: ServerManager
+    @Binding var showModelManagement: Bool
     
     @Query(sort: \PalaceWing.name) var wings: [PalaceWing]
     @StateObject private var registryService = RegistryService.shared
@@ -27,19 +28,21 @@ struct InspectorView: View {
                         
                         HStack {
                             Circle()
-                                .fill(Color.green)
+                                .fill(server.isOnline ? Color.green : Color.orange)
                                 .frame(width: 8, height: 8)
-                            Text("Online")
+                            Text(server.isOnline ? "Online" : "Offline")
                                 .font(.subheadline)
                                 .bold()
-                                .foregroundStyle(.green)
+                                .foregroundStyle(server.isOnline ? .green : .orange)
                             Spacer()
-                            Text("Port 8080")
+                            Text("\(server.host):\(server.port)")
                                 .font(.caption.monospaced())
                                 .foregroundStyle(.secondary)
                         }
                         
-                        Text("Ready for /v1/chat/completions requests.")
+                        Text(server.isOnline
+                             ? "Ready for /v1/chat/completions requests."
+                             : "Server will use saved SwiftLM startup settings when started.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .padding(.top, 4)
@@ -77,7 +80,7 @@ struct InspectorView: View {
                                 .foregroundStyle(.secondary)
                             
                             Button("Load Model") {
-                                showModelPicker = true
+                                showModelManagement = true
                             }
                             .buttonStyle(.borderedProminent)
                             //.tint(SwiftBuddyTheme.accent)

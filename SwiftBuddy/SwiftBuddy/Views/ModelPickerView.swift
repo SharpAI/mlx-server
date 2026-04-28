@@ -406,9 +406,9 @@ private struct HFModelRow: View {
     let onSelect: (String) -> Void
     
     @EnvironmentObject private var engine: InferenceEngine
+    @EnvironmentObject private var downloadManager: ModelDownloadManager
     @State private var pendingLoad = false
     
-    private var downloadManager: ModelDownloadManager { engine.downloadManager }
     private var isDownloaded: Bool { downloadManager.isDownloaded(model.id) }
     private var activeProgress: ModelDownloadProgress? { downloadManager.activeDownloads[model.id] }
 

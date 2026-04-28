@@ -54,8 +54,8 @@ struct SwiftBuddyApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandMenu("Model") {
-                Button("Choose Model…") {
-                    NotificationCenter.default.post(name: .showModelPicker, object: nil)
+                Button("Load Model...") {
+                    NotificationCenter.default.post(name: .showModelManagement, object: nil)
                 }.keyboardShortcut("m", modifiers: [.command, .shift])
                 Button("Unload Model") {
                     engine.unload()
@@ -72,7 +72,6 @@ struct SwiftBuddyApp: App {
 }
 
 extension Notification.Name {
-    static let showModelPicker = Notification.Name("showModelPicker")
     static let showTextIngestion = Notification.Name("showTextIngestion")
     static let showPersonaDiscovery = Notification.Name("showPersonaDiscovery")
     static let showModelManagement = Notification.Name("showModelManagement")
@@ -91,6 +90,7 @@ struct MainContentView: View {
     var body: some View {
         RootView()
             .environmentObject(engine)
+            .environmentObject(engine.downloadManager)
             .environmentObject(appearance)
             .environmentObject(server)
             .preferredColorScheme(appearance.colorScheme)
@@ -99,7 +99,9 @@ struct MainContentView: View {
             .onAppear {
                 MemoryPalaceService.shared.modelContext = modelContext
                 GraphPalaceService.shared.modelContext = modelContext
-                server.start(engine: engine)
+                if server.startupConfiguration.autoStart {
+                    server.start(engine: engine)
+                }
                 
                 // Pre-load the JSON personas so the UI Wings instantly populate!
                 PersonaLoader.loadDevDefaults()

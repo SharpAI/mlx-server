@@ -78,6 +78,7 @@ core_sources = [
     ("../Sources/MLXInferenceCore/HFModelSearch.swift",        uid(), uid()),
     ("../Sources/MLXInferenceCore/ModelArchitectureProbe.swift", uid(), uid()),
     ("../Sources/MLXInferenceCore/InferenceEngine.swift",      uid(), uid()),
+    ("../Sources/MLXInferenceCore/SSDStreamingRecovery.swift", uid(), uid()),
 ]
 
 all_sources = app_sources + core_sources
@@ -402,23 +403,18 @@ def pbxproj():
 \t\t}};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		{PKG_MLX} /* XCLocalSwiftPackageReference "mlx-swift" */ = {{
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../mlx-swift;
+		}};
+		{PKG_MLXLM} /* XCLocalSwiftPackageReference "mlx-swift-lm" */ = {{
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../mlx-swift-lm;
+		}};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCRemoteSwiftPackageReference section */
-\t\t{PKG_MLX} /* XCRemoteSwiftPackageReference "mlx-swift" */ = {{
-\t\t\tisa = XCRemoteSwiftPackageReference;
-\t\t\trepositoryURL = "https://github.com/SharpAI/mlx-swift.git";
-\t\t\trequirement = {{
-\t\t\t\tkind = branch;
-\t\t\t\tbranch = main;
-\t\t\t}};
-\t\t}};
-\t\t{PKG_MLXLM} /* XCRemoteSwiftPackageReference "mlx-swift-lm" */ = {{
-\t\t\tisa = XCRemoteSwiftPackageReference;
-\t\t\trepositoryURL = "https://github.com/SharpAI/mlx-swift-lm.git";
-\t\t\trequirement = {{
-\t\t\t\tkind = branch;
-\t\t\t\tbranch = main;
-\t\t\t}};
-\t\t}};
 \t\t{PKG_TRANSFORMERS} /* XCRemoteSwiftPackageReference "swift-transformers" */ = {{
 \t\t\tisa = XCRemoteSwiftPackageReference;
 \t\t\trepositoryURL = "https://github.com/huggingface/swift-transformers";

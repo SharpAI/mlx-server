@@ -8,6 +8,7 @@ import MLXInferenceCore
 struct RootView: View {
     @EnvironmentObject private var engine: InferenceEngine
     @EnvironmentObject private var appearance: AppearanceStore
+    @EnvironmentObject private var server: ServerManager
     @Environment(\.modelContext) private var modelContext
     @StateObject private var viewModel = ChatViewModel()
     @StateObject private var registry = RegistryService.shared
@@ -17,7 +18,7 @@ struct RootView: View {
     @State private var selectedTab: Tab = .chat
 
     // macOS sheets
-    @State private var showModelPicker = false
+
     @State private var showSettings = false
     @State private var showPersonaDiscovery = false
     @State private var showMap = false
@@ -30,16 +31,10 @@ struct RootView: View {
         Group {
             #if os(macOS)
             macOSLayout
-                .sheet(isPresented: $showModelPicker) {
-                    ModelPickerView(onSelect: { modelId in
-                        showModelPicker = false
-                        Task { await engine.load(modelId: modelId) }
-                    })
-                    .environmentObject(engine)
-                }
                 .sheet(isPresented: $showSettings) {
                     SettingsView(viewModel: viewModel)
                         .environmentObject(appearance)
+                        .environmentObject(server)
                 }
                 .sheet(isPresented: $showMap) {
                     PalaceVisualizerView()
@@ -57,9 +52,7 @@ struct RootView: View {
                     ModelManagementView()
                         .environmentObject(engine)
                 }
-                .onReceive(NotificationCenter.default.publisher(for: .showModelPicker)) { _ in
-                    showModelPicker = true
-                }
+
                 .onReceive(NotificationCenter.default.publisher(for: .showTextIngestion)) { _ in
                     showTextIngestion = true
                 }
@@ -73,7 +66,23 @@ struct RootView: View {
                     viewModel.engine = engine
                     viewModel.modelContext = modelContext
                 }
-                .onChange(of: engine.state) { _, _ in
+                .onChange(of: engine.state) { oldState, newState in
+                    switch newState {
+                    case .idle:
+                        ConsoleLog.shared.info("Engine idle — no model loaded")
+                    case .loading:
+                        ConsoleLog.shared.info("Loading model…")
+                    case .downloading(let p, let speed):
+                        if Int(p * 100) % 25 == 0 {
+                            ConsoleLog.shared.debug("Downloading: \(Int(p * 100))% (\(speed))")
+                        }
+                    case .ready(let modelId):
+                        ConsoleLog.shared.info("✓ Model ready: \(modelId)")
+                    case .generating:
+                        ConsoleLog.shared.debug("Generating…")
+                    case .error(let msg):
+                        ConsoleLog.shared.error("Engine error: \(msg)")
+                    }
                 }
                 .overlay {
                     if registry.isSyncing {
@@ -215,6 +224,7 @@ struct RootView: View {
             NavigationStack {
                 SettingsView(viewModel: viewModel, isTab: true)
                     .environmentObject(appearance)
+                    .environmentObject(server)
             }
             .tabItem {
                 Label("Settings", systemImage: selectedTab == .settings ? "gearshape.fill" : "gearshape")
@@ -223,7 +233,7 @@ struct RootView: View {
         }
         .tint(SwiftBuddyTheme.accent)
         // Navigate to Models tab when a model load is requested from chat
-        .onReceive(NotificationCenter.default.publisher(for: .showModelPicker)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .showModelManagement)) { _ in
             selectedTab = .models
         }
     }
@@ -341,8 +351,7 @@ struct RootView: View {
         } detail: {
             ChatView(
                 viewModel: viewModel,
-                showSettings: $showSettings,
-                showModelPicker: $showModelPicker
+                showSettings: $showSettings
             )
             .frame(minWidth: 400)
             .background(SwiftBuddyTheme.background)
@@ -406,7 +415,7 @@ struct RootView: View {
     private var engineStateView: some View {
         switch engine.state {
         case .idle:
-            Button("Load Model") { showModelPicker = true }
+            Button("Load Model") { showModelManagement = true }
                 .buttonStyle(.borderedProminent)
                 .tint(SwiftBuddyTheme.accent)
                 .controlSize(.small)
