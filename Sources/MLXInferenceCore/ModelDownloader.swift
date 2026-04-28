@@ -166,6 +166,16 @@ public final class DownloadSpeedTracker: @unchecked Sendable {
     }
 }
 
+private struct DownloadedFileSizeMismatchError: LocalizedError {
+    let fileName: String
+    let expectedSize: Int64
+    let actualSize: Int64
+
+    var errorDescription: String? {
+        "Downloaded file \(fileName) is incomplete (expected \(expectedSize) bytes, got \(actualSize))."
+    }
+}
+
 // MARK: — Downloader actor
 
 public actor ModelDownloader {
@@ -276,13 +286,19 @@ public actor ModelDownloader {
             guard let freshHttp = freshResponse as? HTTPURLResponse, (200..<300).contains(freshHttp.statusCode) else {
                 throw URLError(.badServerResponse)
             }
-            try await streamToFile(
+            let totalSize = freshHttp.expectedContentLength > 0 ? freshHttp.expectedContentLength : (expectedSize ?? 0)
+            let writtenSize = try await streamToFile(
                 asyncBytes: freshBytes,
                 destURL: incompleteURL,
                 resumeOffset: 0,
-                totalSize: freshHttp.expectedContentLength > 0 ? freshHttp.expectedContentLength : (expectedSize ?? 0),
+                totalSize: totalSize,
                 speedTracker: speedTracker,
                 onProgress: onProgress
+            )
+            try validateCompletedDownloadSize(
+                fileName: fileName,
+                actualSize: writtenSize,
+                expectedSize: totalSize > 0 ? totalSize : expectedSize
             )
         } else if (200..<300).contains(http.statusCode) {
             // 200 = full content (server ignored Range), 206 = partial content (resume worked)
@@ -299,13 +315,18 @@ public actor ModelDownloader {
             } else {
                 totalSize = http.expectedContentLength > 0 ? http.expectedContentLength : (expectedSize ?? 0)
             }
-            try await streamToFile(
+            let writtenSize = try await streamToFile(
                 asyncBytes: asyncBytes,
                 destURL: incompleteURL,
                 resumeOffset: isResume ? resumeOffset : 0,
                 totalSize: totalSize,
                 speedTracker: speedTracker,
                 onProgress: onProgress
+            )
+            try validateCompletedDownloadSize(
+                fileName: fileName,
+                actualSize: writtenSize,
+                expectedSize: totalSize > 0 ? totalSize : expectedSize
             )
         } else {
             throw URLError(.badServerResponse)
@@ -325,7 +346,7 @@ public actor ModelDownloader {
         totalSize: Int64,
         speedTracker: DownloadSpeedTracker,
         onProgress: @Sendable (Double, Double?) -> Void
-    ) async throws {
+    ) async throws -> Int64 {
         let fileHandle: FileHandle
         if resumeOffset > 0, FileManager.default.fileExists(atPath: destURL.path) {
             fileHandle = try FileHandle(forWritingTo: destURL)
@@ -336,43 +357,57 @@ public actor ModelDownloader {
         }
         defer { try? fileHandle.close() }
 
-        var bytesWritten: Int64 = resumeOffset
-        var buffer = Data()
         let flushSize = 256 * 1024  // Flush every 256 KB
         var lastProgressUpdate = Date()
+        var bytesWritten: Int64 = resumeOffset
+        var iterator = asyncBytes.makeAsyncIterator()
+        var chunkBuffer = [UInt8](repeating: 0, count: flushSize)
 
-        for try await byte in asyncBytes {
+        while true {
             try Task.checkCancellation()
-            buffer.append(byte)
 
-            if buffer.count >= flushSize {
-                fileHandle.write(buffer)
-                bytesWritten += Int64(buffer.count)
-                buffer.removeAll(keepingCapacity: true)
+            var chunkCount = 0
+            while chunkCount < chunkBuffer.count,
+                  let byte = try await iterator.next() {
+                chunkBuffer[chunkCount] = byte
+                chunkCount += 1
+            }
 
-                speedTracker.record(totalBytes: bytesWritten)
+            if chunkCount == 0 {
+                break
+            }
 
-                // Throttle progress updates to ~10/sec
-                let now = Date()
-                if now.timeIntervalSince(lastProgressUpdate) >= 0.1 {
-                    lastProgressUpdate = now
-                    if totalSize > 0 {
-                        onProgress(Double(bytesWritten) / Double(totalSize), speedTracker.speedBytesPerSec)
-                    }
+            fileHandle.write(Data(chunkBuffer[0..<chunkCount]))
+            bytesWritten += Int64(chunkCount)
+
+            speedTracker.record(totalBytes: bytesWritten)
+
+            let now = Date()
+            if now.timeIntervalSince(lastProgressUpdate) >= 0.1 {
+                lastProgressUpdate = now
+                if totalSize > 0 {
+                    onProgress(Double(bytesWritten) / Double(totalSize), speedTracker.speedBytesPerSec)
                 }
             }
-        }
-
-        // Flush remaining bytes
-        if !buffer.isEmpty {
-            fileHandle.write(buffer)
-            bytesWritten += Int64(buffer.count)
-            speedTracker.record(totalBytes: bytesWritten)
         }
 
         if totalSize > 0 {
             onProgress(Double(bytesWritten) / Double(totalSize), speedTracker.speedBytesPerSec)
         }
+        return bytesWritten
+    }
+
+    private func validateCompletedDownloadSize(
+        fileName: String,
+        actualSize: Int64,
+        expectedSize: Int64?
+    ) throws {
+        guard let expectedSize, expectedSize > 0, actualSize != expectedSize else { return }
+        throw DownloadedFileSizeMismatchError(
+            fileName: fileName,
+            expectedSize: expectedSize,
+            actualSize: actualSize
+        )
     }
 
     /// Download all model files to `ModelStorage.cacheRoot` in the Hugging Face

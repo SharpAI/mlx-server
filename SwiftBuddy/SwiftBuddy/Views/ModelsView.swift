@@ -12,6 +12,7 @@ struct ModelsView: View {
     @State private var showHFSearch = false
     @State private var showManagement = false
     @State private var device = DeviceProfile.current
+    @State private var deleteErrorMessage: String?
 
     private var dm: ModelDownloadManager { engine.downloadManager }
 
@@ -47,7 +48,7 @@ struct ModelsView: View {
                                 IncompleteDownloadRow(
                                     incomplete: incomplete,
                                     onResume: { dm.resumeDownload(modelId: incomplete.id) },
-                                    onDelete: { try? dm.delete(incomplete.id) }
+                                    onDelete: { deleteModel(incomplete.id) }
                                 )
                                 .padding(.horizontal)
                                 if incomplete.id != dm.incompleteDownloads.last?.id {
@@ -83,7 +84,7 @@ struct ModelsView: View {
                                     entry: entry,
                                     isActive: isActive,
                                     onLoad: { Task { await engine.load(modelId: downloaded.id) } },
-                                    onDelete: { try? dm.delete(downloaded.id) }
+                                    onDelete: { deleteModel(downloaded.id) }
                                 )
                                 .padding(.horizontal)
                                 if downloaded.id != dm.downloadedModels.last?.id {
@@ -206,6 +207,25 @@ struct ModelsView: View {
         .sheet(isPresented: $showManagement) {
             ModelManagementView()
                 .environmentObject(engine)
+        }
+        .alert(
+            "Delete Failed",
+            isPresented: Binding(
+                get: { deleteErrorMessage != nil },
+                set: { if !$0 { deleteErrorMessage = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(deleteErrorMessage ?? "")
+        }
+    }
+
+    private func deleteModel(_ modelId: String) {
+        do {
+            try dm.delete(modelId)
+        } catch {
+            deleteErrorMessage = error.localizedDescription
         }
     }
 

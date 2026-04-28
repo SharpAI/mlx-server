@@ -528,11 +528,17 @@ public final class InferenceEngine: ObservableObject {
                     }
                     
                     let mlxMessages = finalMessages
-                    var params = GenerateParameters(temperature: config.temperature)
-                    params.topP = config.topP
-                    params.topK = config.topK
-                    params.minP = config.minP
-                    params.repetitionPenalty = config.repetitionPenalty
+                    var params = GenerateParameters(
+                        maxTokens: config.maxTokens,
+                        kvBits: config.kvBits,
+                        kvGroupSize: config.kvGroupSize,
+                        temperature: config.temperature,
+                        topP: config.topP,
+                        topK: config.topK,
+                        minP: config.minP,
+                        repetitionPenalty: config.repetitionPenalty,
+                        prefillStepSize: config.prefillSize
+                    )
                     params.repetitionContextSize = 20
 
                     var thinkingActive = false
@@ -604,13 +610,7 @@ public final class InferenceEngine: ObservableObject {
                     continuation.yield(GenerationToken(text: "\n\n[Error: \(error.localizedDescription)]"))
                 }
 
-                // Also check the latch one final time (for errors that occurred during
-                // generation and caused the stream to end without throwing)
-                if let latchedError = SSDStreamingErrorLatch.shared.consume() {
-                    let msg = "Model weights are corrupted or incomplete. Please re-download the model."
-                    print("[InferenceEngine] Latched SSD error after generation: \(latchedError.localizedDescription)")
-                    self.markModelCorrupted(modelId: self.currentModelId, message: msg)
-                } else if case .error = self.state {
+                if case .error = self.state {
                     // Already in error state from catch block above
                 } else {
                     self.state = self.currentModelId.map { .ready(modelId: $0) } ?? .idle

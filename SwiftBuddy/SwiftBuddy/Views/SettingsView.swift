@@ -1,4 +1,5 @@
 // SettingsView.swift — Full SwiftLM parameter dashboard + console log (iOS tab or macOS sheet)
+import Observation
 import SwiftUI
 #if canImport(MLXInferenceCore)
 import MLXInferenceCore
@@ -331,42 +332,34 @@ struct SettingsView: View {
                     }
                 }
 
-                parameterCard("Memory Optimization") {
-                    toggleRow(
-                        label: "TurboQuant KV Cache", icon: "bolt.circle",
-                        isOn: $viewModel.config.turboKV,
-                        tint: SwiftBuddyTheme.warning,
-                        hint: "3-bit KV compression — recommended for 100k+ context windows"
-                    )
-
-                    if viewModel.config.turboKV {
-                        // KV Bits picker
-                        HStack {
-                            Label("KV Bits", systemImage: "number.circle")
-                                .foregroundStyle(SwiftBuddyTheme.textPrimary)
-                                .font(.callout)
-                            Spacer()
-                            Picker("", selection: Binding(
-                                get: { viewModel.config.kvBits ?? 0 },
-                                set: { viewModel.config.kvBits = $0 == 0 ? nil : $0 }
-                            )) {
-                                Text("Auto").tag(0)
-                                Text("4-bit").tag(4)
-                                Text("8-bit").tag(8)
-                            }
-                            .pickerStyle(.segmented)
-                            .frame(width: 200)
+                parameterCard("KV Cache") {
+                    HStack {
+                        Label("KV Bits", systemImage: "number.circle")
+                            .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                            .font(.callout)
+                        Spacer()
+                        Picker("", selection: Binding(
+                            get: { viewModel.config.kvBits ?? 0 },
+                            set: { viewModel.config.kvBits = $0 == 0 ? nil : $0 }
+                        )) {
+                            Text("Off").tag(0)
+                            Text("4-bit").tag(4)
+                            Text("8-bit").tag(8)
                         }
-                        .padding(.vertical, 2)
+                        .pickerStyle(.segmented)
+                        .frame(width: 200)
                     }
-                }
+                    .padding(.vertical, 2)
 
-                parameterCard("Expert Streaming (MoE)") {
-                    toggleRow(
-                        label: "SSD Expert Streaming", icon: "arrow.triangle.swap",
-                        isOn: $viewModel.config.streamExperts,
-                        tint: SwiftBuddyTheme.accent,
-                        hint: "Flash-MoE: stream expert weights from NVMe — enables 122B models on 16GB"
+                    sliderRow(
+                        label: "KV Group Size", icon: "square.3.layers.3d",
+                        value: Binding(
+                            get: { Double(viewModel.config.kvGroupSize) },
+                            set: { viewModel.config.kvGroupSize = Int($0) }
+                        ),
+                        range: 32...128, step: 32, format: "%.0f",
+                        tint: SwiftBuddyTheme.warning,
+                        hint: "Applies to quantized KV cache during generation"
                     )
                 }
 
@@ -525,8 +518,8 @@ struct SettingsView: View {
                     default:
                         aboutRow("Model", value: engine.state.shortLabel)
                     }
-                    if let tokens = engine.activeContextTokens as Int? {
-                        aboutRow("Context Tokens", value: "\(tokens)")
+                    if engine.activeContextTokens > 0 {
+                        aboutRow("Context Tokens", value: "\(engine.activeContextTokens)")
                     }
                 }
 

@@ -57,6 +57,8 @@ public final class ModelDownloadManager: ObservableObject {
     @Published public private(set) var totalDiskUsageBytes: Int64 = 0
     @Published public private(set) var networkStatus: NetworkStatus = .unknown
 
+    private var downloadedModelIDs: Set<String> = []
+
     // MARK: Persistence
     private let lastModelKey = "swiftlm.lastLoadedModelId"
     public var lastLoadedModelId: String? {
@@ -131,6 +133,7 @@ public final class ModelDownloadManager: ObservableObject {
                 modifiedDate: s.modifiedDate
             )
         }
+        downloadedModelIDs = Set(downloadedModels.map(\.id))
         totalDiskUsageBytes = downloadedModels.reduce(0) { $0 + $1.sizeBytes }
 
         // Scan for interrupted downloads that can be resumed
@@ -142,7 +145,7 @@ public final class ModelDownloadManager: ObservableObject {
     }
 
     public func isDownloaded(_ modelId: String) -> Bool {
-        ModelStorage.isDownloaded(modelId)
+        downloadedModelIDs.contains(modelId)
     }
 
     /// True if a model has a partial download that can be resumed.

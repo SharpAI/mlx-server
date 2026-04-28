@@ -25,6 +25,7 @@ struct RootView: View {
     @State private var showMindPalace = false
     @State private var showTextIngestion = false
     @State private var showModelManagement = false
+    @State private var lastDownloadLogBucket: Int?
     enum Tab { case chat, models, palace, mindPalace, miner, settings }
 
     var body: some View {
@@ -51,6 +52,7 @@ struct RootView: View {
                 .sheet(isPresented: $showModelManagement) {
                     ModelManagementView()
                         .environmentObject(engine)
+                        .environmentObject(engine.downloadManager)
                 }
 
                 .onReceive(NotificationCenter.default.publisher(for: .showTextIngestion)) { _ in
@@ -69,18 +71,26 @@ struct RootView: View {
                 .onChange(of: engine.state) { oldState, newState in
                     switch newState {
                     case .idle:
+                        lastDownloadLogBucket = nil
                         ConsoleLog.shared.info("Engine idle — no model loaded")
                     case .loading:
+                        lastDownloadLogBucket = nil
                         ConsoleLog.shared.info("Loading model…")
                     case .downloading(let p, let speed):
-                        if Int(p * 100) % 25 == 0 {
-                            ConsoleLog.shared.debug("Downloading: \(Int(p * 100))% (\(speed))")
+                        let percent = Int(p * 100)
+                        let bucket = min((percent / 25) * 25, 100)
+                        if bucket != lastDownloadLogBucket, [0, 25, 50, 75, 100].contains(bucket) {
+                            lastDownloadLogBucket = bucket
+                            ConsoleLog.shared.debug("Downloading: \(percent)% (\(speed))")
                         }
                     case .ready(let modelId):
+                        lastDownloadLogBucket = nil
                         ConsoleLog.shared.info("✓ Model ready: \(modelId)")
                     case .generating:
+                        lastDownloadLogBucket = nil
                         ConsoleLog.shared.debug("Generating…")
                     case .error(let msg):
+                        lastDownloadLogBucket = nil
                         ConsoleLog.shared.error("Engine error: \(msg)")
                     }
                 }

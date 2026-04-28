@@ -48,7 +48,7 @@ private var swiftBuddyJSONHeaders: HTTPFields {
 private func swiftBuddyJSONString(_ value: String) -> String {
     guard let data = try? JSONEncoder().encode(value),
           let string = String(data: data, encoding: .utf8) else {
-        return #"""#
+        return "\"\""
     }
     return string
 }
