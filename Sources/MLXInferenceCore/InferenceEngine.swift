@@ -114,6 +114,10 @@ public final class InferenceEngine: ObservableObject {
     @Published public private(set) var activeContextTokens: Int = 0
     @Published public private(set) var maxContextWindow: Int = 0
 
+    /// Set when a corrupted/truncated model is detected during inference.
+    /// The UI should observe this and offer to delete & re-download.
+    @Published public var corruptedModelId: String? = nil
+
     /// Whether to automatically unload the model when the app backgrounds
     /// and reload it when returning to foreground.
     /// Defaults to true on iOS (prevents jetsam), false on macOS.
@@ -277,7 +281,44 @@ public final class InferenceEngine: ObservableObject {
             state = .error("Device is too hot. Let it cool before loading a model.")
             return
         }
+        corruptedModelId = nil
 
+        guard ModelStorage.verifyModelIntegrity(for: modelId) else {
+            await downloadThenLoad(modelId: modelId)
+            return
+        }
+
+        await loadVerifiedModel(modelId: modelId)
+    }
+
+    private func downloadThenLoad(modelId: String) async {
+        print("[InferenceEngine] Model \(modelId) is missing or incomplete. Starting download before load.")
+        releaseLoadedModelResources()
+        state = .downloading(progress: 0.0, speed: "Preparing...")
+
+        let task = downloadManager.startDownload(modelId: modelId)
+
+        do {
+            try await task.value
+            state = .downloading(progress: 1.0, speed: "Verifying...")
+
+            guard ModelStorage.verifyModelIntegrity(for: modelId) else {
+                markModelCorrupted(
+                    modelId: modelId,
+                    message: "Model files are incomplete after download. Choose a recovery option."
+                )
+                return
+            }
+
+            await loadVerifiedModel(modelId: modelId)
+        } catch is CancellationError {
+            state = .idle
+        } catch {
+            state = .error("Failed to download \(modelId): \(error.localizedDescription)")
+        }
+    }
+
+    private func loadVerifiedModel(modelId: String) async {
         state = .loading
         currentModelId = modelId
 
@@ -312,17 +353,21 @@ public final class InferenceEngine: ObservableObject {
                 downloader: downloader
             )
 
+            let speedTracker = DownloadSpeedTracker()
+
             if architecture.supportsVision {
                 container = try await VLMModelFactory.shared.loadContainer(
                     from: downloader,
                     using: TransformersTokenizerLoader(),
                     configuration: config
                 ) { [weak self] progress in
+                    speedTracker.record(totalBytes: progress.completedUnitCount)
+                    let smoothedSpeed = speedTracker.speedBytesPerSec
+
                     Task { @MainActor in
                         guard let self else { return }
                         let pct = progress.fractionCompleted
-                        let speedBytesPerSec = progress.userInfo[ProgressUserInfoKey("throughputKey")] as? Double
-                        let speedStr = speedBytesPerSec
+                        let speedStr = smoothedSpeed
                             .map { String(format: "%.1f MB/s", $0 / 1_000_000) } ?? ""
                         self.state = .downloading(progress: pct, speed: speedStr)
 
@@ -330,7 +375,7 @@ public final class InferenceEngine: ObservableObject {
                             modelId: modelId,
                             fractionCompleted: pct,
                             currentFile: "",
-                            speedMBps: speedBytesPerSec.map { $0 / 1_000_000 }
+                            speedMBps: smoothedSpeed.map { $0 / 1_000_000 }
                         ))
                     }
                 }
@@ -340,11 +385,13 @@ public final class InferenceEngine: ObservableObject {
                     using: TransformersTokenizerLoader(),
                     configuration: config
                 ) { [weak self] progress in
+                    speedTracker.record(totalBytes: progress.completedUnitCount)
+                    let smoothedSpeed = speedTracker.speedBytesPerSec
+
                     Task { @MainActor in
                         guard let self else { return }
                         let pct = progress.fractionCompleted
-                        let speedBytesPerSec = progress.userInfo[ProgressUserInfoKey("throughputKey")] as? Double
-                        let speedStr = speedBytesPerSec
+                        let speedStr = smoothedSpeed
                             .map { String(format: "%.1f MB/s", $0 / 1_000_000) } ?? ""
                         self.state = .downloading(progress: pct, speed: speedStr)
 
@@ -352,7 +399,7 @@ public final class InferenceEngine: ObservableObject {
                             modelId: modelId,
                             fractionCompleted: pct,
                             currentFile: "",
-                            speedMBps: speedBytesPerSec.map { $0 / 1_000_000 }
+                            speedMBps: smoothedSpeed.map { $0 / 1_000_000 }
                         ))
                     }
                 }
@@ -361,24 +408,83 @@ public final class InferenceEngine: ObservableObject {
             downloadManager.clearProgress(modelId: modelId)
             downloadManager.lastLoadedModelId = modelId
             downloadManager.refresh()
+
+            // Verify integrity to catch incomplete downloads before marking as ready
+            guard ModelStorage.verifyModelIntegrity(for: modelId) else {
+                throw NSError(domain: "InferenceEngine", code: 1, userInfo: [NSLocalizedDescriptionKey: "Model safetensors files are incomplete. Please delete and re-download."])
+            }
+
+            // Read the model's actual max context length from config.json
+            if let ctxLen = ModelStorage.readMaxContextLength(for: modelId) {
+                self.maxContextWindow = ctxLen
+                print("[InferenceEngine] Model context window: \(ctxLen) tokens")
+            } else {
+                self.maxContextWindow = 8192  // conservative fallback for models without explicit limits
+                print("[InferenceEngine] No explicit context limit found in config.json, defaulting to 8192")
+            }
+
             state = .ready(modelId: modelId)
 
         } catch {
             ExpertStreamingConfig.shared.deactivate()
             downloadManager.clearProgress(modelId: modelId)
             state = .error("Failed to load \(modelId): \(error.localizedDescription)")
+
+            // If the model is incomplete/corrupted, flag it so the UI shows the "Delete & Re-download" button
+            let nsError = error as NSError
+            if nsError.domain == "InferenceEngine" && nsError.code == 1 || Self.isModelCorruptionError(error) {
+                markModelCorrupted(
+                    modelId: modelId,
+                    message: "Model weights are corrupted or incomplete. Choose a recovery option."
+                )
+                return
+            }
+
             container = nil
+            self.maxContextWindow = 0
+            self.activeContextTokens = 0
         }
     }
 
     /// Unload the current model and free all GPU memory.
     public func unload() {
+        releaseLoadedModelResources()
+        corruptedModelId = nil
+        state = .idle
+    }
+
+    private func releaseLoadedModelResources() {
         generationTask?.cancel()
+        generationTask = nil
         container = nil
         currentModelId = nil
-        state = .idle
+        maxContextWindow = 0
+        activeContextTokens = 0
         ExpertStreamingConfig.shared.deactivate()
         MLX.Memory.cacheLimit = 0
+    }
+
+    private func markModelCorrupted(modelId: String?, message: String) {
+        let failedModelId = modelId ?? currentModelId
+        releaseLoadedModelResources()
+        state = .error(message)
+        corruptedModelId = failedModelId
+    }
+
+    private static func isModelCorruptionError(_ error: Error) -> Bool {
+        let description = error.localizedDescription.lowercased()
+        return description.contains("ssd streaming")
+            || description.contains("pread")
+            || description.contains("safetensors")
+            || description.contains("corrupt")
+            || description.contains("incomplete")
+    }
+
+    public func clearCorruptionRecovery() {
+        corruptedModelId = nil
+        if case .error = state {
+            state = .idle
+        }
     }
 
     // MARK: — Generation
@@ -442,9 +548,7 @@ public final class InferenceEngine: ObservableObject {
                     let baseTokens = Int(Double(stringLength) / 3.5)
                     self.activeContextTokens = baseTokens
                     
-                    // If we have a max length config, expose it
-                    // TODO: Safely extract from ModelConfiguration when MLX exposes it dynamically
-                    self.maxContextWindow = 8192
+                    // maxContextWindow is already set during loadModel() from config.json
                     
                     let stream: AsyncStream<Generation> = try await container.generate(
                         input: lmInput,
@@ -485,11 +589,32 @@ public final class InferenceEngine: ObservableObject {
                             continuation.yield(GenerationToken(text: text, isThinking: thinkingActive))
                         }
                     }
+                } catch let ssdError as SSDStreamingError {
+                    // Corrupted/truncated safetensors — surface a clear, actionable error
+                    let msg = "Model weights are corrupted or incomplete. Please re-download the model."
+                    print("[InferenceEngine] SSD Streaming Error: \(ssdError.localizedDescription)")
+                    continuation.yield(GenerationToken(text: "\n\n[Error: \(msg)]"))
+                    self.markModelCorrupted(modelId: self.currentModelId, message: msg)
                 } catch {
+                    // Check if the generic error is also an SSD streaming issue
+                    if Self.isModelCorruptionError(error) {
+                        let msg = "Model weights are corrupted or incomplete. Please re-download the model."
+                        self.markModelCorrupted(modelId: self.currentModelId, message: msg)
+                    }
                     continuation.yield(GenerationToken(text: "\n\n[Error: \(error.localizedDescription)]"))
                 }
 
-                self.state = self.currentModelId.map { .ready(modelId: $0) } ?? .idle
+                // Also check the latch one final time (for errors that occurred during
+                // generation and caused the stream to end without throwing)
+                if let latchedError = SSDStreamingErrorLatch.shared.consume() {
+                    let msg = "Model weights are corrupted or incomplete. Please re-download the model."
+                    print("[InferenceEngine] Latched SSD error after generation: \(latchedError.localizedDescription)")
+                    self.markModelCorrupted(modelId: self.currentModelId, message: msg)
+                } else if case .error = self.state {
+                    // Already in error state from catch block above
+                } else {
+                    self.state = self.currentModelId.map { .ready(modelId: $0) } ?? .idle
+                }
                 continuation.finish()
             }
         }
@@ -499,5 +624,30 @@ public final class InferenceEngine: ObservableObject {
         generationTask?.cancel()
         generationTask = nil
         if let id = currentModelId { state = .ready(modelId: id) }
+    }
+
+    /// Delete corrupted model files and start a fresh download.
+    /// Called from the UI when the user confirms re-download after corruption is detected.
+    public func deleteCorruptedAndRedownload() {
+        guard let modelId = corruptedModelId else { return }
+
+        releaseLoadedModelResources()
+        state = .downloading(progress: 0.0, speed: "Deleting corrupted files...")
+
+        do {
+            try ModelStorage.delete(modelId)
+            print("[InferenceEngine] Successfully deleted corrupted cache directory for \(modelId).")
+        } catch {
+            print("[InferenceEngine] FAILED to delete corrupted cache: \(error.localizedDescription)")
+            state = .error("Failed to delete corrupted model: \(error.localizedDescription)")
+            return
+        }
+        downloadManager.refresh()
+        corruptedModelId = nil
+
+        print("[InferenceEngine] Deleted corrupted files for \(modelId), starting fresh download")
+        Task { @MainActor in
+            await downloadThenLoad(modelId: modelId)
+        }
     }
 }

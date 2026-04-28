@@ -52,6 +52,7 @@ public final class ModelDownloadManager: ObservableObject {
 
     // MARK: Published state
     @Published public private(set) var downloadedModels: [DownloadedModel] = []
+    @Published public private(set) var incompleteDownloads: [ModelStorage.IncompleteDownload] = []
     @Published public private(set) var activeDownloads: [String: ModelDownloadProgress] = [:]
     @Published public private(set) var totalDiskUsageBytes: Int64 = 0
     @Published public private(set) var networkStatus: NetworkStatus = .unknown
@@ -131,40 +132,84 @@ public final class ModelDownloadManager: ObservableObject {
             )
         }
         totalDiskUsageBytes = downloadedModels.reduce(0) { $0 + $1.sizeBytes }
+
+        // Scan for interrupted downloads that can be resumed
+        incompleteDownloads = ModelStorage.scanIncompleteDownloads()
+            .filter { incomplete in
+                // Exclude models that are already actively downloading
+                !activeDownloads.keys.contains(incomplete.id)
+            }
     }
 
     public func isDownloaded(_ modelId: String) -> Bool {
         ModelStorage.isDownloaded(modelId)
     }
 
+    /// True if a model has a partial download that can be resumed.
+    public func hasIncompleteDownload(_ modelId: String) -> Bool {
+        incompleteDownloads.contains { $0.id == modelId }
+    }
+
     public func downloadedModel(for modelId: String) -> DownloadedModel? {
         downloadedModels.first(where: { $0.id == modelId })
     }
 
-    /// Delete a model and free disk space.
+    /// Delete a model and free disk space (including any partial downloads).
     public func delete(_ modelId: String) throws {
         try ModelStorage.delete(modelId)
         refresh()
         if lastLoadedModelId == modelId { lastLoadedModelId = nil }
     }
 
+    /// Resume an incomplete download. This calls startDownload() which will
+    /// automatically resume from where it left off (partial files + HTTP Range).
+    @discardableResult
+    public func resumeDownload(modelId: String) -> Task<Void, Error> {
+        return startDownload(modelId: modelId)
+    }
+
     // MARK: — Download
 
-    /// Start downloading a model (iOS only — macOS goes through LLMModelFactory in InferenceEngine.load()).
+    /// Start downloading a model.
+    /// iOS: Uses ModelDownloader with per-file resume + retry.
+    /// macOS: Uses HubApi.snapshot() which handles resume internally; we add retry around it.
     @discardableResult
-    public func startDownload(modelId: String) -> Task<Void, Error> {
+    public func startDownload(
+        modelId: String,
+        retryConfig: DownloadRetryConfig = .default
+    ) -> Task<Void, Error> {
+        print("[ModelDownloadManager] startDownload called for \(modelId)")
         downloadTasks[modelId]?.cancel()
 
         let task = Task<Void, Error> {
+            print("[ModelDownloadManager] Task started for \(modelId)")
+            // Instantly register 0% progress so UI banners appear immediately
+            // before the Hub API computes the file snapshot.
+            Task { @MainActor [weak self] in
+                if self?.activeDownloads[modelId] == nil {
+                    print("[ModelDownloadManager] Registering 0% progress for \(modelId)")
+                    self?.activeDownloads[modelId] = ModelDownloadProgress(
+                        modelId: modelId,
+                        fractionCompleted: 0.0,
+                        currentFile: "Preparing download...",
+                        speedMBps: nil
+                    )
+                }
+            }
+
             do {
                 defer {
+                    print("[ModelDownloadManager] Defer executing, removing activeDownload for \(modelId)")
                     Task { @MainActor [weak self] in
                         self?.activeDownloads.removeValue(forKey: modelId)
                     }
                 }
 
                 #if !os(macOS)
-                try await ModelDownloader.shared.download(modelId: modelId) { [weak self] fp in
+                try await ModelDownloader.shared.download(
+                    modelId: modelId,
+                    retryConfig: retryConfig
+                ) { [weak self] fp in
                     Task { @MainActor [weak self] in
                         self?.activeDownloads[modelId] = ModelDownloadProgress(
                             modelId: modelId,
@@ -175,23 +220,68 @@ public final class ModelDownloadManager: ObservableObject {
                     }
                 }
                 #else
-                let hub = HubApi(downloadBase: ModelStorage.cacheRoot)
-                _ = try await hub.snapshot(
-                    from: modelId,
-                    matching: ["*.safetensors", "*.json", "*.model", "*.txt", "*.tiktoken"],
-                    progressHandler: { @Sendable [weak self] progress in
-                        Task { @MainActor [weak self] in
-                            let pct = progress.fractionCompleted
-                            let speedBytesPerSec = progress.userInfo[ProgressUserInfoKey("throughputKey")] as? Double
-                            self?.activeDownloads[modelId] = ModelDownloadProgress(
-                                modelId: modelId,
-                                fractionCompleted: pct,
-                                currentFile: "",
-                                speedMBps: speedBytesPerSec.map { $0 / 1_000_000 }
-                            )
+                // macOS: HubApi.snapshot() already supports resume via incomplete blob
+                // files and HTTP Range headers. We add retry for transient failures.
+                let speedTracker = DownloadSpeedTracker()
+                var lastError: Error?
+                for attempt in 0...retryConfig.maxRetries {
+                    do {
+                        if attempt > 0 {
+                            let delay = retryConfig.delay(for: attempt - 1)
+                            print("[ModelDownloadManager] Retry \(attempt)/\(retryConfig.maxRetries) for \(modelId) after \(String(format: "%.1f", delay))s")
+                            try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                            try Task.checkCancellation()
+                            speedTracker.reset()
                         }
+
+                        let hub = HubApi(downloadBase: ModelStorage.cacheRoot)
+                        print("[ModelDownloadManager] Calling hub.snapshot for \(modelId)")
+                        _ = try await hub.snapshot(
+                            from: modelId,
+                            matching: ["*.safetensors", "*.json", "*.model", "*.txt", "*.tiktoken"],
+                            progressHandler: { @Sendable [weak self] progress in
+                                // Feed cumulative bytes into the EWMA tracker
+                                speedTracker.record(totalBytes: progress.completedUnitCount)
+                                let smoothedSpeed = speedTracker.speedBytesPerSec
+
+                                Task { @MainActor [weak self] in
+                                    let pct = progress.fractionCompleted
+                                    self?.activeDownloads[modelId] = ModelDownloadProgress(
+                                        modelId: modelId,
+                                        fractionCompleted: pct,
+                                        currentFile: attempt > 0 ? "(retry \(attempt))" : "",
+                                        speedMBps: smoothedSpeed.map { $0 / 1_000_000 }
+                                    )
+                                }
+                            }
+                        )
+                        print("[ModelDownloadManager] hub.snapshot FINISHED SUCCESSFULLY for \(modelId)")
+                        lastError = nil
+                        break  // Success
+                    } catch is CancellationError {
+                        print("[ModelDownloadManager] Task was CANCELLED for \(modelId)")
+                        throw CancellationError()
+                    } catch {
+                        lastError = error
+                        print("[ModelDownloadManager] Download failed for \(modelId): \(error.localizedDescription)")
+                        // Only retry transient network errors
+                        if let urlError = error as? URLError {
+                            switch urlError.code {
+                            case .cancelled, .userCancelledAuthentication:
+                                throw error
+                            case .notConnectedToInternet, .networkConnectionLost,
+                                 .timedOut, .cannotConnectToHost, .dnsLookupFailed:
+                                continue
+                            default:
+                                if attempt >= retryConfig.maxRetries { throw error }
+                                continue
+                            }
+                        }
+                        // Non-URLError (e.g. auth failure) — don't retry
+                        throw error
                     }
-                )
+                }
+                if let error = lastError { throw error }
                 #endif
 
                 Task { @MainActor [weak self] in
