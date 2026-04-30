@@ -35,15 +35,17 @@ struct SettingsView: View {
     enum SettingsTab: String, CaseIterable {
         case generation = "Generation"
         case engine = "Engine"
+        case appearance = "Appearance"
         case console = "Console"
         case about = "About"
 
         var icon: String {
             switch self {
-            case .generation: return "slider.horizontal.3"
-            case .engine:     return "cpu"
-            case .console:    return "terminal"
-            case .about:      return "info.circle"
+            case .generation:  return "slider.horizontal.3"
+            case .engine:      return "cpu"
+            case .appearance:  return "paintpalette"
+            case .console:     return "terminal"
+            case .about:       return "info.circle"
             }
         }
     }
@@ -66,6 +68,8 @@ struct SettingsView: View {
                         generationTab
                     case .engine:
                         engineTab
+                    case .appearance:
+                        appearanceTab
                     case .console:
                         consoleTab
                     case .about:
@@ -501,22 +505,6 @@ struct SettingsView: View {
                     )
                 }
 
-                parameterCard("Appearance") {
-                    HStack {
-                        Label("Color Scheme", systemImage: "paintpalette")
-                            .foregroundStyle(SwiftBuddyTheme.textPrimary)
-                            .font(.callout)
-                        Spacer()
-                    }
-                    Picker("", selection: $appearance.preference) {
-                        HStack { Image(systemName: "moon.fill"); Text("Dark") }.tag("dark")
-                        HStack { Image(systemName: "sun.max.fill"); Text("Light") }.tag("light")
-                        HStack { Image(systemName: "circle.lefthalf.filled"); Text("System") }.tag("system")
-                    }
-                    .pickerStyle(.segmented)
-                    .tint(SwiftBuddyTheme.accent)
-                }
-
                 parameterCard("Advanced Engine") {
                     // ── TurboKV (per-request, no reload needed) ──────────────────────────
                     toggleRow(
@@ -623,6 +611,49 @@ struct SettingsView: View {
                 Spacer(minLength: 20)
             }
             .padding(.top, 8)
+        }
+    }
+
+    // MARK: - Appearance Tab
+
+    // Use local state for the picker to avoid triggering a @Published write
+    // directly from within a view update cycle, which causes the crash:
+    // "Publishing changes from within view updates is not allowed"
+    @State private var localColorScheme: String = "dark"
+
+    private var appearanceTab: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                parameterCard("Theme") {
+                    HStack {
+                        Label("Color Scheme", systemImage: "paintpalette")
+                            .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                            .font(.callout)
+                        Spacer()
+                    }
+                    Picker("", selection: Binding(
+                        get: { appearance.preference },
+                        set: { newValue in
+                            localColorScheme = newValue
+                            // Defer the @Published write to avoid the view update crash
+                            Task { @MainActor in
+                                appearance.preference = newValue
+                            }
+                        }
+                    )) {
+                        HStack { Image(systemName: "moon.fill"); Text("Dark") }.tag("dark")
+                        HStack { Image(systemName: "sun.max.fill"); Text("Light") }.tag("light")
+                        HStack { Image(systemName: "circle.lefthalf.filled"); Text("System") }.tag("system")
+                    }
+                    .pickerStyle(.segmented)
+                    .tint(SwiftBuddyTheme.accent)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 24)
+        }
+        .onAppear {
+            localColorScheme = appearance.preference
         }
     }
 
