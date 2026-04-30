@@ -2972,15 +2972,15 @@ public final class ALMModelFactory: ModelFactory, @unchecked Sendable {
     ) async throws -> ModelContext {
         let context = try await LLMModelFactory.shared._load(configuration: configuration, tokenizerLoader: tokenizerLoader)
         
-        let numAudioEmbeddings = OmniModelFactory.extractNumAudioEmbeddings(configuration: configuration)
+        let tokens = OmniModelFactory.extractMultimodalTokens(configuration: configuration)
         let messageGenerator = DefaultMessageGenerator()
         let processor = ALMUserInputProcessor(
             tokenizer: context.tokenizer,
             configuration: context.configuration,
             messageGenerator: messageGenerator,
-            boaToken: 255010,
-            eoaToken: 255011,
-            numAudioEmbeddings: numAudioEmbeddings
+            boaToken: tokens.boa,
+            eoaToken: tokens.eoa,
+            numAudioEmbeddings: tokens.numAudio
         )
         
         return .init(
@@ -3040,10 +3040,12 @@ public final class OmniModelFactory: ModelFactory, @unchecked Sendable {
         tokenizerLoader: any TokenizerLoader
     ) async throws -> ModelContext {
         let vlmContext = try await VLMModelFactory.shared._load(configuration: configuration, tokenizerLoader: tokenizerLoader)
-        let numAudioEmbeddings = OmniModelFactory.extractNumAudioEmbeddings(configuration: configuration)
+        let tokens = OmniModelFactory.extractMultimodalTokens(configuration: configuration)
         let omniProcessor = OmniUserInputProcessor(
             vlmProcessor: vlmContext.processor,
-            numAudioEmbeddings: numAudioEmbeddings
+            boaToken: tokens.boa,
+            eoaToken: tokens.eoa,
+            numAudioEmbeddings: tokens.numAudio
         )
         
         return .init(
@@ -3054,19 +3056,30 @@ public final class OmniModelFactory: ModelFactory, @unchecked Sendable {
         )
     }
 
-    public static func extractNumAudioEmbeddings(configuration: ResolvedModelConfiguration) -> Int {
+    public static func extractMultimodalTokens(configuration: ResolvedModelConfiguration) -> (numAudio: Int, boa: Int, eoa: Int) {
         let configurationURL = configuration.modelDirectory.appending(component: "config.json")
+        var numAudio = 128
+        var boa = 255010
+        var eoa = 255011
+        
         if let data = try? Data(contentsOf: configurationURL),
            let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             
+            // Extract num_audio_embeddings
             if let subsampling = dict["subsampling_conv_channels"] as? [Int] {
-                return subsampling.first ?? 128
-            }
-            if let audioConfig = dict["audio_config"] as? [String: Any],
+                numAudio = subsampling.first ?? 128
+            } else if let audioConfig = dict["audio_config"] as? [String: Any],
                let embeddings = audioConfig["num_audio_embeddings"] as? Int {
-                return embeddings
+                numAudio = embeddings
             }
+            
+            // Extract BOA/EOA tokens
+            if let b = dict["boa_token_id"] as? Int { boa = b }
+            else if let b = (dict["audio_config"] as? [String: Any])?["boa_token_id"] as? Int { boa = b }
+            
+            if let e = dict["eoa_token_id"] as? Int { eoa = e }
+            else if let e = (dict["audio_config"] as? [String: Any])?["eoa_token_id"] as? Int { eoa = e }
         }
-        return 128
+        return (numAudio, boa, eoa)
     }
 }
