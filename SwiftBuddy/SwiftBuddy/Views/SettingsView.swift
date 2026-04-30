@@ -794,58 +794,18 @@ struct SettingsView: View {
 
     /// Build the equivalent `swift run SwiftLM` command from current settings.
     private var cliCommand: String {
-        let cfg = viewModel.config
-        let srv = server
-        var parts: [String] = []
-
-        // Model (use loaded ID if available)
-        switch engine.state {
-        case .ready(let id):
-            parts.append("--model \(id)")
-        default:
-            parts.append("--model <model-id>")
-        }
-
-        parts.append("--host \(srv.host)")
-        parts.append("--port \(srv.port)")
-        parts.append("--max-tokens \(cfg.maxTokens)")
-        parts.append("--temp \(String(format: "%.2f", cfg.temperature))")
-
-        if cfg.topP < 1.0 {
-            parts.append("--top-p \(String(format: "%.2f", cfg.topP))")
-        }
-        if cfg.topK != 50 {
-            parts.append("--top-k \(cfg.topK)")
-        }
-        if cfg.minP > 0 {
-            parts.append("--min-p \(String(format: "%.2f", cfg.minP))")
-        }
-        if cfg.repetitionPenalty != 1.05 {
-            parts.append("--repeat-penalty \(String(format: "%.2f", cfg.repetitionPenalty))")
-        }
-        if cfg.prefillSize != 512 {
-            parts.append("--prefill-size \(cfg.prefillSize)")
-        }
-        if let kvBits = cfg.kvBits {
-            parts.append("--kv-bits \(kvBits)")
-            if cfg.kvGroupSize != 64 {
-                parts.append("--kv-group-size \(cfg.kvGroupSize)")
-            }
-        }
-        if cfg.enableThinking {
-            parts.append("--thinking")
-        }
-        if let seed = cfg.seed {
-            parts.append("--seed \(seed)")
-        }
-        if srv.startupConfiguration.parallelSlots > 1 {
-            parts.append("--parallel \(srv.startupConfiguration.parallelSlots)")
-        }
-        if !srv.startupConfiguration.apiKey.isEmpty {
-            parts.append("--api-key <redacted>")
-        }
-
-        return "swift run SwiftLM " + parts.joined(separator: " \\\n  ")
+        let loadedId: String? = {
+            if case .ready(let id) = engine.state { return id }
+            return nil
+        }()
+        return buildCLICommand(
+            config:     viewModel.config,
+            host:       server.host,
+            port:       server.port,
+            parallel:   server.startupConfiguration.parallelSlots,
+            apiKeySet:  !server.startupConfiguration.apiKey.isEmpty,
+            modelId:    loadedId
+        )
     }
 
     private func copyCLI() {
