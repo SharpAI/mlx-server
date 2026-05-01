@@ -37,8 +37,17 @@ struct SettingsView: View {
         return ModelCatalog.all.first(where: { $0.id == modelId })?.isMoE ?? false
     }
 
+    private var currentModelId: String? {
+        guard case .ready(let modelId) = engine.state else { return nil }
+        return modelId
+    }
+
     private var effectiveStreamExpertsSetting: Bool {
         viewModel.config.effectiveStreamExperts(defaultingTo: currentModelIsMoE)
+    }
+
+    private var needsModelReloadForStreamingChange: Bool {
+        effectiveStreamExpertsSetting != currentModelIsMoE
     }
 
     private var ssdStreamingBinding: Binding<Bool> {
@@ -295,6 +304,9 @@ struct SettingsView: View {
                         tint: SwiftBuddyTheme.warning,
                         hint: "Stream MoE expert weights from NVMe (requires model reload)"
                     )
+                    if needsModelReloadForStreamingChange {
+                        modelReloadPrompt
+                    }
                     toggleRow(
                         label: "TurboQuant KV", icon: "bolt.badge.clock",
                         isOn: $viewModel.config.turboKV,
@@ -555,70 +567,8 @@ struct SettingsView: View {
                             tint: SwiftBuddyTheme.accentSecondary,
                             hint: "mmap expert weights from NVMe — only active expert pages stay in RAM. Auto-enabled for MoE catalog models."
                         )
-                        if effectiveStreamExpertsSetting != currentModelIsMoE {
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "arrow.clockwise.circle.fill")
-                                        .foregroundStyle(SwiftBuddyTheme.warning)
-                                        .font(.caption)
-                                    Text("Reload model to apply this change")
-                                        .font(.caption2.weight(.medium))
-                                        .foregroundStyle(SwiftBuddyTheme.warning)
-                                    Spacer()
-                                    Button("Reload") {
-                                        let currentId: String? = {
-                                            if case .ready(let id) = engine.state { return id }
-                                            return nil
-                                        }()
-                                        if let id = currentId {
-                                            Task {
-                                                engine.unload()
-                                                await engine.load(modelId: id)
-                                            }
-                                        }
-                                    }
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(SwiftBuddyTheme.accent)
-                                    .buttonStyle(.plain)
-                                }
-
-                                switch engine.state {
-                                case .loading(let progress, let stage):
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        HStack {
-                                            Text(stage)
-                                                .font(.caption2.weight(.medium))
-                                                .foregroundStyle(SwiftBuddyTheme.textSecondary)
-                                            Spacer()
-                                            Text("\(Int(progress * 100))%")
-                                                .font(.caption2.monospacedDigit())
-                                                .foregroundStyle(SwiftBuddyTheme.textTertiary)
-                                        }
-                                        ProgressView(value: progress)
-                                            .tint(SwiftBuddyTheme.accent)
-                                    }
-                                case .downloading(let progress, let speed):
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        HStack {
-                                            Text("Downloading model files")
-                                                .font(.caption2.weight(.medium))
-                                                .foregroundStyle(SwiftBuddyTheme.textSecondary)
-                                            Spacer()
-                                            Text("\(Int(progress * 100))% · \(speed)")
-                                                .font(.caption2.monospacedDigit())
-                                                .foregroundStyle(SwiftBuddyTheme.textTertiary)
-                                        }
-                                        ProgressView(value: progress)
-                                            .tint(SwiftBuddyTheme.accent)
-                                    }
-                                default:
-                                    EmptyView()
-                                }
-                            }
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 6)
-                            .background(SwiftBuddyTheme.warning.opacity(0.08))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        if needsModelReloadForStreamingChange {
+                            modelReloadPrompt
                         }
                     }
                 }
@@ -702,7 +652,7 @@ struct SettingsView: View {
                     }
                     .pickerStyle(.segmented)
                     .tint(SwiftBuddyTheme.accent)
-                    .onChange(of: localColorScheme) { newValue in
+                    .onChange(of: localColorScheme) { _, newValue in
                         // Defer the @Published write to avoid the view update crash
                         Task { @MainActor in
                             appearance.preference = newValue
@@ -917,7 +867,7 @@ struct SettingsView: View {
             port: server.port,
             parallel: server.startupConfiguration.parallelSlots,
             apiKeySet: !server.startupConfiguration.apiKey.isEmpty,
-            modelId: {
+            modelId: { () -> String? in
                 if case .ready(let id) = engine.state { return id }
                 return nil
             }()
@@ -978,6 +928,57 @@ struct SettingsView: View {
         serverSaveMessage = "Server restarted"
         withAnimation(.easeInOut(duration: 0.2)) {
             showRestartNotification = false
+        }
+    }
+
+    @ViewBuilder
+    private var modelReloadPrompt: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.clockwise.circle.fill")
+                    .foregroundStyle(SwiftBuddyTheme.warning)
+                    .font(.caption)
+                Text("Reload model to apply this change")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(SwiftBuddyTheme.warning)
+                Spacer()
+                Button("Reload") {
+                    reloadCurrentModel()
+                }
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(SwiftBuddyTheme.accent)
+                .buttonStyle(.plain)
+                .disabled(currentModelId == nil)
+            }
+
+            switch engine.state {
+            case .loading(let progress, let stage):
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(stage)
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(SwiftBuddyTheme.textSecondary)
+                        Spacer()
+                        Text("\(Int(progress * 100))%")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(SwiftBuddyTheme.textTertiary)
+                    }
+
+                    ProgressView(value: progress)
+                        .tint(SwiftBuddyTheme.accent)
+                        .controlSize(.small)
+                }
+            default:
+                EmptyView()
+            }
+        }
+    }
+
+    private func reloadCurrentModel() {
+        guard let currentModelId else { return }
+        Task {
+            engine.unload()
+            await engine.load(modelId: currentModelId)
         }
     }
 

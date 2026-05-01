@@ -70,6 +70,7 @@ for p in sorted(Path("SwiftBuddy").rglob("*.swift")):
 # ── MLXInferenceCore sources (path relative to SwiftBuddy/)
 core_sources = [
     ("../Sources/MLXInferenceCore/ChatMessage.swift",          uid(), uid()),
+    ("../Sources/MLXInferenceCore/CLICommandBuilder.swift",    uid(), uid()),
     ("../Sources/MLXInferenceCore/GenerationConfig.swift",     uid(), uid()),
     ("../Sources/MLXInferenceCore/ModelCatalog.swift",         uid(), uid()),
     ("../Sources/MLXInferenceCore/ModelStorage.swift",         uid(), uid()),
@@ -512,7 +513,7 @@ def main():
     print("    • ../mlx-swift-lm             → MLXLLM, MLXLMCommon")
     print()
     print("📂  MLXInferenceCore sources included directly:")
-    for p, _, _ in [("ChatMessage", None, None), ("GenerationConfig", None, None),
+    for p, _, _ in [("ChatMessage", None, None), ("CLICommandBuilder", None, None), ("GenerationConfig", None, None),
                     ("ModelCatalog", None, None), ("ModelDownloadManager", None, None),
                     ("ModelArchitectureProbe", None, None), ("InferenceEngine", None, None)]:
         print(f"    • {p}.swift")
