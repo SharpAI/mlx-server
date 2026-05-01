@@ -32,6 +32,22 @@ struct SettingsView: View {
         Double(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024)
     }
 
+    private var currentModelIsMoE: Bool {
+        guard case .ready(let modelId) = engine.state else { return false }
+        return ModelCatalog.all.first(where: { $0.id == modelId })?.isMoE ?? false
+    }
+
+    private var effectiveStreamExpertsSetting: Bool {
+        viewModel.config.effectiveStreamExperts(defaultingTo: currentModelIsMoE)
+    }
+
+    private var ssdStreamingBinding: Binding<Bool> {
+        Binding(
+            get: { effectiveStreamExpertsSetting },
+            set: { viewModel.config.streamExperts = $0 }
+        )
+    }
+
     enum SettingsTab: String, CaseIterable {
         case generation = "Generation"
         case engine = "Engine"
@@ -203,7 +219,7 @@ struct SettingsView: View {
                             get: { Double(viewModel.config.maxTokens) },
                             set: { viewModel.config.maxTokens = Int($0) }
                         ),
-                        range: 128...max(16384.0, Double(engine.maxContextWindow)), step: 128, format: "%.0f",
+                        range: 128...16384.0, step: 128, format: "%.0f",
                         tint: SwiftBuddyTheme.accent,
                         hint: engine.maxContextWindow > 0
                             ? "Max output per reply. Model context window: \(engine.maxContextWindow / 1000)K tokens"
@@ -269,6 +285,21 @@ struct SettingsView: View {
                         isOn: $viewModel.config.enableThinking,
                         tint: SwiftBuddyTheme.accentSecondary,
                         hint: "Step-by-step reasoning for Qwen3.5, DeepSeek-R1"
+                    )
+                }
+
+                parameterCard("Performance") {
+                    toggleRow(
+                        label: "SSD Streaming", icon: "internaldrive",
+                        isOn: ssdStreamingBinding,
+                        tint: SwiftBuddyTheme.warning,
+                        hint: "Stream MoE expert weights from NVMe (requires model reload)"
+                    )
+                    toggleRow(
+                        label: "TurboQuant KV", icon: "bolt.badge.clock",
+                        isOn: $viewModel.config.turboKV,
+                        tint: SwiftBuddyTheme.success,
+                        hint: "3-bit KV compression for massive context windows"
                     )
                 }
 
@@ -520,13 +551,11 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         toggleRow(
                             label: "SSD Expert Streaming", icon: "externaldrive.fill",
-                            isOn: $viewModel.config.streamExperts,
+                            isOn: ssdStreamingBinding,
                             tint: SwiftBuddyTheme.accentSecondary,
                             hint: "mmap expert weights from NVMe — only active expert pages stay in RAM. Auto-enabled for MoE catalog models."
                         )
-                        if viewModel.config.streamExperts != (ModelCatalog.all.first(where: {
-                            if case .ready(let id) = engine.state { return $0.id == id } else { return false }
-                        })?.isMoE ?? false) {
+                        if effectiveStreamExpertsSetting != currentModelIsMoE {
                             VStack(alignment: .leading, spacing: 8) {
                                 HStack(spacing: 6) {
                                     Image(systemName: "arrow.clockwise.circle.fill")
@@ -666,22 +695,19 @@ struct SettingsView: View {
                             .font(.callout)
                         Spacer()
                     }
-                    Picker("", selection: Binding(
-                        get: { appearance.preference },
-                        set: { newValue in
-                            localColorScheme = newValue
-                            // Defer the @Published write to avoid the view update crash
-                            Task { @MainActor in
-                                appearance.preference = newValue
-                            }
-                        }
-                    )) {
-                        HStack { Image(systemName: "moon.fill"); Text("Dark") }.tag("dark")
-                        HStack { Image(systemName: "sun.max.fill"); Text("Light") }.tag("light")
-                        HStack { Image(systemName: "circle.lefthalf.filled"); Text("System") }.tag("system")
+                    Picker("", selection: $localColorScheme) {
+                        Text("Dark").tag("dark")
+                        Text("Light").tag("light")
+                        Text("System").tag("system")
                     }
                     .pickerStyle(.segmented)
                     .tint(SwiftBuddyTheme.accent)
+                    .onChange(of: localColorScheme) { newValue in
+                        // Defer the @Published write to avoid the view update crash
+                        Task { @MainActor in
+                            appearance.preference = newValue
+                        }
+                    }
                 }
             }
             .padding(.horizontal, 16)
@@ -885,37 +911,17 @@ struct SettingsView: View {
 
     /// Build the equivalent `swift run SwiftLM` command from current settings.
     private var cliCommand: String {
-        let cfg = viewModel.config
-        var parts: [String] = []
-
-        if case .ready(let id) = engine.state {
-            parts.append("--model \(id)")
-        } else {
-            parts.append("--model <model-id>")
-        }
-
-        parts.append("--host \(server.host)")
-        parts.append("--port \(server.port)")
-        parts.append("--max-tokens \(cfg.maxTokens)")
-        parts.append("--temp \(String(format: "%.2f", cfg.temperature))")
-
-        if cfg.topP < 1.0              { parts.append("--top-p \(String(format: "%.2f", cfg.topP))") }
-        if cfg.topK != 50              { parts.append("--top-k \(cfg.topK)") }
-        if cfg.minP > 0                { parts.append("--min-p \(String(format: "%.2f", cfg.minP))") }
-        if cfg.repetitionPenalty != 1.05 { parts.append("--repeat-penalty \(String(format: "%.2f", cfg.repetitionPenalty))") }
-        if cfg.prefillSize != 512      { parts.append("--prefill-size \(cfg.prefillSize)") }
-        if let kv = cfg.kvBits {
-            parts.append("--kv-bits \(kv)")
-            if cfg.kvGroupSize != 64   { parts.append("--kv-group-size \(cfg.kvGroupSize)") }
-        }
-        if cfg.enableThinking          { parts.append("--thinking") }
-        if let seed = cfg.seed         { parts.append("--seed \(seed)") }
-        if server.startupConfiguration.parallelSlots > 1 {
-            parts.append("--parallel \(server.startupConfiguration.parallelSlots)")
-        }
-        if !server.startupConfiguration.apiKey.isEmpty { parts.append("--api-key <redacted>") }
-
-        return "swift run SwiftLM " + parts.joined(separator: " \\\n  ")
+        buildCLICommand(
+            config: viewModel.config,
+            host: server.host,
+            port: server.port,
+            parallel: server.startupConfiguration.parallelSlots,
+            apiKeySet: !server.startupConfiguration.apiKey.isEmpty,
+            modelId: {
+                if case .ready(let id) = engine.state { return id }
+                return nil
+            }()
+        )
     }
 
     private func copyCLI() {

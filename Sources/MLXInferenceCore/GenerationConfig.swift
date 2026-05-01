@@ -86,6 +86,19 @@ public struct GenerationConfig: Sendable, Codable {
 
     private static let storageKey = "swiftlm.generationConfig"
 
+    /// True when the user has previously saved a GenerationConfig.
+    /// Used to distinguish the first-run/default state from an explicit choice.
+    public static var hasPersistedConfig: Bool {
+        UserDefaults.standard.object(forKey: storageKey) != nil
+    }
+
+    /// Computes the effective SSD streaming setting.
+    /// Before the user has saved settings, MoE models default to streaming on.
+    /// After settings are persisted, the saved toggle becomes authoritative.
+    public func effectiveStreamExperts(defaultingTo defaultValue: Bool) -> Bool {
+        Self.hasPersistedConfig ? streamExperts : defaultValue
+    }
+
     public func save() {
         guard let data = try? JSONEncoder().encode(self) else { return }
         UserDefaults.standard.set(data, forKey: Self.storageKey)

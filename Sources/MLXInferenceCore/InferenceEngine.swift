@@ -331,11 +331,10 @@ public final class InferenceEngine: ObservableObject {
             // at load time — only active expert pages touch RAM during inference.
             var config = ModelConfiguration(id: modelId)
             let isMoE = ModelCatalog.all.first(where: { $0.id == modelId })?.isMoE ?? false
-            // SSD expert streaming:
-            // - MoE catalog models default ON (required to fit in RAM)
-            // - User can override via GenerationConfig.streamExperts for custom/non-catalog models
-            // - isMoE acts as the default; user toggle overrides both ways
-            let shouldStream = isMoE || GenerationConfig.load().streamExperts
+            let generationConfig = GenerationConfig.load()
+            // SSD expert streaming defaults ON for MoE until the user saves a preference.
+            // Once persisted, the saved toggle becomes authoritative for all models.
+            let shouldStream = generationConfig.effectiveStreamExperts(defaultingTo: isMoE)
             if shouldStream {
                 config.lazyLoad = true
                 let modelDir = ModelStorage.snapshotDirectory(for: modelId)
@@ -349,7 +348,7 @@ public final class InferenceEngine: ObservableObject {
                         #endif
                     }()
                 )
-                print("[InferenceEngine] SSD expert streaming: enabled (isMoE=\(isMoE), userOverride=\(GenerationConfig.load().streamExperts))")
+                print("[InferenceEngine] SSD expert streaming: enabled (isMoE=\(isMoE), persisted=\(GenerationConfig.hasPersistedConfig), setting=\(generationConfig.streamExperts))")
             } else {
                 print("[InferenceEngine] SSD expert streaming: disabled")
             }
