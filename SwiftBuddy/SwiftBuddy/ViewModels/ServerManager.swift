@@ -150,10 +150,108 @@ final class ServerManager: ObservableObject {
                     return Response(status: .ok, headers: swiftBuddyJSONHeaders, body: .init(byteBuffer: buffer))
                 }
 
-                // Simple V1 models mock
+                // ── /v1/models ─────────────────────────────────────────
                 router.get("/v1/models") { _, _ -> Response in
-                    let buffer = ByteBuffer(string: #"{"object": "list", "data": [{"id": "local", "object": "model"}]}"#)
-                    return Response(status: .ok, headers: swiftBuddyJSONHeaders, body: .init(byteBuffer: buffer))
+                    let modelId: String
+                    switch await engine.state {
+                    case .ready(let id): modelId = id
+                    default: modelId = "none"
+                    }
+                    // Use swiftBuddyJSONString to safely escape the model ID —
+                    // model IDs with slashes (e.g. "mlx-community/Qwen3") are safe,
+                    // but quotes or control chars would break the JSON structure.
+                    let body = "{\"object\":\"list\",\"data\":[{\"id\":\(swiftBuddyJSONString(modelId)),\"object\":\"model\",\"owned_by\":\"swiftbuddy\"}]}"
+                    return Response(status: .ok, headers: swiftBuddyJSONHeaders,
+                                    body: .init(byteBuffer: ByteBuffer(string: body)))
+                }
+
+                // ── /v1/chat/completions (OpenAI-compatible, streaming + non-streaming) ──
+                router.post("/v1/chat/completions") { request, _ -> Response in
+                    // 1. Parse body
+                    guard let bodyData = try? await request.body.collect(upTo: 4 * 1024 * 1024),
+                          let json = try? JSONSerialization.jsonObject(with: Data(buffer: bodyData)) as? [String: Any]
+                    else {
+                        let err = #"{"error":{"message":"Invalid JSON body","type":"invalid_request_error"}}"#
+                        return Response(status: .badRequest, headers: swiftBuddyJSONHeaders,
+                                        body: .init(byteBuffer: ByteBuffer(string: err)))
+                    }
+
+                    let streamRequested = json["stream"] as? Bool ?? false
+
+                    // 2. Map messages
+                    var chatMessages: [ChatMessage] = []
+                    if let msgs = json["messages"] as? [[String: Any]] {
+                        for m in msgs {
+                            let role    = m["role"]    as? String ?? "user"
+                            let content = m["content"] as? String ?? ""
+                            switch role {
+                            case "system", "developer": chatMessages.append(.system(content))
+                            case "assistant":           chatMessages.append(.assistant(content))
+                            case "tool":                chatMessages.append(.tool(content))
+                            case "user":                chatMessages.append(.user(content))
+                            default:                    chatMessages.append(.user(content))
+                            }
+                        }
+                    }
+
+                    // 3. Build request config from persisted user defaults + per-request overrides
+                    var reqConfig = GenerationConfig.load()
+                    if let t  = json["temperature"]       as? Double { reqConfig.temperature        = Float(t) }
+                    if let p  = json["top_p"]             as? Double { reqConfig.topP               = Float(p) }
+                    if let mt = json["max_tokens"]        as? Int    { reqConfig.maxTokens           = mt }
+                    if let rp = json["frequency_penalty"] as? Double { reqConfig.repetitionPenalty  = Float(rp) }
+
+                    let modelId: String
+                    switch await engine.state {
+                    case .ready(let id): modelId = id
+                    default: modelId = "local"
+                    }
+                    let reqId   = "chatcmpl-\(UUID().uuidString.prefix(8))"
+                    let created = Int(Date().timeIntervalSince1970)
+                    // Escape model ID once — used in both streaming and non-streaming paths.
+                    // Slashes in HF model IDs (e.g. "mlx-community/Qwen3") are safe inside
+                    // JSON strings, but quotes/control chars in custom model names would break.
+                    let escapedModelId = swiftBuddyJSONString(modelId)
+
+                    // Helper: JSON-safe escape for token text using JSONEncoder so ALL
+                    // control chars (U+0000–U+001F) are correctly escaped, not just \n/\r/\t.
+                    func jsonEscape(_ s: String) -> String {
+                        guard let data = try? JSONEncoder().encode(s),
+                              let raw = String(data: data, encoding: .utf8) else { return "\"\"" }
+                        // JSONEncoder wraps in outer quotes — strip them for inline interpolation
+                        return String(raw.dropFirst().dropLast())
+                    }
+
+                    if streamRequested {
+                        // ── SSE streaming ───────────────────────────────────
+                        var sseHeaders = HTTPFields()
+                        sseHeaders.append(HTTPField(name: .contentType, value: "text/event-stream; charset=utf-8"))
+                        sseHeaders.append(HTTPField(name: HTTPField.Name("Cache-Control")!, value: "no-cache"))
+                        sseHeaders.append(HTTPField(name: HTTPField.Name("X-Accel-Buffering")!, value: "no"))
+
+                        let sseStream = AsyncStream<ByteBuffer> { cont in
+                            Task {
+                                for await token in await engine.generate(messages: chatMessages, config: reqConfig) {
+                                    let chunk = "{\"id\":\"\(reqId)\",\"object\":\"chat.completion.chunk\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\(jsonEscape(token.text))\"},\"finish_reason\":null}]}"
+                                    cont.yield(ByteBuffer(string: "data: \(chunk)\n\n"))
+                                }
+                                cont.yield(ByteBuffer(string: "data: [DONE]\n\n"))
+                                cont.finish()
+                            }
+                        }
+                        return Response(status: .ok, headers: sseHeaders,
+                                        body: .init(asyncSequence: sseStream))
+
+                    } else {
+                        // ── Non-streaming: collect full response ────────────
+                        var fullText = ""
+                        for await token in await engine.generate(messages: chatMessages, config: reqConfig) {
+                            fullText += token.text
+                        }
+                        let body = "{\"id\":\"\(reqId)\",\"object\":\"chat.completion\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\(jsonEscape(fullText))\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0}}"
+                        return Response(status: .ok, headers: swiftBuddyJSONHeaders,
+                                        body: .init(byteBuffer: ByteBuffer(string: body)))
+                    }
                 }
                 
                 let app = Application(

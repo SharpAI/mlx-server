@@ -277,8 +277,8 @@ private struct ActiveModelCardView: View {
                     entry: engine.loadedModelId.flatMap { id in ModelCatalog.all.first(where: { $0.id == id }) },
                     state: engine.state
                 )
-            case .loading:
-                loadingCard
+            case .loading(let progress, let stage):
+                loadingCard(progress: progress, stage: stage)
             case .downloading(let progress, let speed):
                 downloadingCard(progress: progress, speed: speed)
             case .idle, .error:
@@ -287,18 +287,24 @@ private struct ActiveModelCardView: View {
         }
     }
 
-    private var loadingCard: some View {
-        HStack(spacing: 12) {
-            ProgressView().controlSize(.regular).tint(SwiftBuddyTheme.accent)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Loading model…")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
-                Text("Initializing Metal GPU")
-                    .font(.caption)
+    private func loadingCard(progress: Double, stage: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                ProgressView().controlSize(.regular).tint(SwiftBuddyTheme.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Loading model…")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                    Text(stage)
+                        .font(.caption)
+                        .foregroundStyle(SwiftBuddyTheme.textSecondary)
+                }
+                Spacer()
+                Text("\(Int(progress * 100))%")
+                    .font(.caption.monospacedDigit())
                     .foregroundStyle(SwiftBuddyTheme.textSecondary)
             }
-            Spacer()
+            ProgressView(value: progress).tint(SwiftBuddyTheme.accent)
         }
         .padding()
         .glassCard(cornerRadius: SwiftBuddyTheme.radiusLarge)

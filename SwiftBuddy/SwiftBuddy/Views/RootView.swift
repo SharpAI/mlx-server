@@ -26,6 +26,7 @@ struct RootView: View {
     @State private var showTextIngestion = false
     @State private var showModelManagement = false
     @State private var lastDownloadLogBucket: Int?
+    @State private var lastLoadingStage: String?
     enum Tab { case chat, models, palace, mindPalace, miner, settings }
 
     var body: some View {
@@ -72,11 +73,16 @@ struct RootView: View {
                     switch newState {
                     case .idle:
                         lastDownloadLogBucket = nil
+                        lastLoadingStage = nil
                         ConsoleLog.shared.info("Engine idle — no model loaded")
-                    case .loading:
+                    case .loading(_, let stage):
                         lastDownloadLogBucket = nil
-                        ConsoleLog.shared.info("Loading model…")
+                        if lastLoadingStage != stage {
+                            lastLoadingStage = stage
+                            ConsoleLog.shared.info(stage)
+                        }
                     case .downloading(let p, let speed):
+                        lastLoadingStage = nil
                         let percent = Int(p * 100)
                         let bucket = min((percent / 25) * 25, 100)
                         if bucket != lastDownloadLogBucket, [0, 25, 50, 75, 100].contains(bucket) {
@@ -85,12 +91,15 @@ struct RootView: View {
                         }
                     case .ready(let modelId):
                         lastDownloadLogBucket = nil
+                        lastLoadingStage = nil
                         ConsoleLog.shared.info("✓ Model ready: \(modelId)")
                     case .generating:
                         lastDownloadLogBucket = nil
+                        lastLoadingStage = nil
                         ConsoleLog.shared.debug("Generating…")
                     case .error(let msg):
                         lastDownloadLogBucket = nil
+                        lastLoadingStage = nil
                         ConsoleLog.shared.error("Engine error: \(msg)")
                     }
                 }
@@ -430,12 +439,12 @@ struct RootView: View {
                 .tint(SwiftBuddyTheme.accent)
                 .controlSize(.small)
 
-        case .loading:
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.mini).tint(SwiftBuddyTheme.accent)
-                Text("Loading…")
-                    .font(.caption)
-                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
+        case .loading(let progress, let stage):
+            VStack(alignment: .leading, spacing: 4) {
+                ProgressView(value: progress).tint(SwiftBuddyTheme.accent)
+                Text("\(Int(progress * 100))% · \(stage)")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(SwiftBuddyTheme.textTertiary)
             }
 
         case .downloading(let progress, let speed):

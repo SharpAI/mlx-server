@@ -18,6 +18,10 @@ struct SettingsView: View {
     @State private var selectedTab: SettingsTab = .generation
     @State private var draftServerConfiguration = ServerStartupConfiguration.load()
     @State private var showRestartNotification = false
+    @State private var endpointCopied = false
+    @State private var showAppliedBadge = false
+    @State private var toastHideWork: DispatchWorkItem? = nil
+    @State private var cliCopied = false
     @State private var serverSaveMessage = "Server settings saved"
     @State private var restartNotificationRequiresAction = false
 
@@ -28,18 +32,36 @@ struct SettingsView: View {
         Double(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024)
     }
 
+    private var currentModelIsMoE: Bool {
+        guard case .ready(let modelId) = engine.state else { return false }
+        return ModelCatalog.all.first(where: { $0.id == modelId })?.isMoE ?? false
+    }
+
+    private var effectiveStreamExpertsSetting: Bool {
+        viewModel.config.effectiveStreamExperts(defaultingTo: currentModelIsMoE)
+    }
+
+    private var ssdStreamingBinding: Binding<Bool> {
+        Binding(
+            get: { effectiveStreamExpertsSetting },
+            set: { viewModel.config.streamExperts = $0 }
+        )
+    }
+
     enum SettingsTab: String, CaseIterable {
         case generation = "Generation"
         case engine = "Engine"
+        case appearance = "Appearance"
         case console = "Console"
         case about = "About"
 
         var icon: String {
             switch self {
-            case .generation: return "slider.horizontal.3"
-            case .engine:     return "cpu"
-            case .console:    return "terminal"
-            case .about:      return "info.circle"
+            case .generation:  return "slider.horizontal.3"
+            case .engine:      return "cpu"
+            case .appearance:  return "paintpalette"
+            case .console:     return "terminal"
+            case .about:       return "info.circle"
             }
         }
     }
@@ -62,6 +84,8 @@ struct SettingsView: View {
                         generationTab
                     case .engine:
                         engineTab
+                    case .appearance:
+                        appearanceTab
                     case .console:
                         consoleTab
                     case .about:
@@ -190,13 +214,16 @@ struct SettingsView: View {
 
                 parameterCard("Output") {
                     sliderRow(
-                        label: "Max Tokens", icon: "text.word.spacing",
+                        label: "Max Response Tokens", icon: "text.word.spacing",
                         value: Binding(
                             get: { Double(viewModel.config.maxTokens) },
                             set: { viewModel.config.maxTokens = Int($0) }
                         ),
-                        range: 128...max(16384.0, Double(engine.maxContextWindow)), step: 128, format: "%.0f",
-                        tint: SwiftBuddyTheme.accent
+                        range: 128...16384.0, step: 128, format: "%.0f",
+                        tint: SwiftBuddyTheme.accent,
+                        hint: engine.maxContextWindow > 0
+                            ? "Max output per reply. Model context window: \(engine.maxContextWindow / 1000)K tokens"
+                            : "Max tokens generated per response (context window shown once model loads)"
                     )
                     sliderRow(
                         label: "Repetition Penalty", icon: "repeat.circle",
@@ -208,6 +235,48 @@ struct SettingsView: View {
                         tint: SwiftBuddyTheme.success,
                         hint: "Higher = less repeating, 1.0 = disabled"
                     )
+
+                    // Seed — optional reproducibility
+                    HStack {
+                        Label("Seed", systemImage: "number")
+                            .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                            .font(.callout)
+                        Spacer()
+                        if let seed = viewModel.config.seed {
+                            Text("\(seed)")
+                                .foregroundStyle(SwiftBuddyTheme.textSecondary)
+                                .font(.callout.monospacedDigit())
+                            Stepper("", value: Binding(
+                                get: { Int(min(seed, UInt64(Int.max))) },
+                                set: { viewModel.config.seed = UInt64($0) }
+                            ), in: 0...Int.max)
+                            .labelsHidden()
+                            Button {
+                                viewModel.config.seed = nil
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(SwiftBuddyTheme.textTertiary)
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            Text("Random")
+                                .foregroundStyle(SwiftBuddyTheme.textTertiary)
+                                .font(.callout)
+                            Button {
+                                viewModel.config.seed = UInt64.random(in: 0...UInt64(Int.max))
+                            } label: {
+                                Image(systemName: "lock.fill")
+                                    .foregroundStyle(SwiftBuddyTheme.accent)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                    if viewModel.config.seed != nil {
+                        Text("Fixed seed — same input will produce identical output")
+                            .font(.caption2)
+                            .foregroundStyle(SwiftBuddyTheme.textTertiary)
+                    }
                 }
 
                 parameterCard("Reasoning") {
@@ -216,6 +285,21 @@ struct SettingsView: View {
                         isOn: $viewModel.config.enableThinking,
                         tint: SwiftBuddyTheme.accentSecondary,
                         hint: "Step-by-step reasoning for Qwen3.5, DeepSeek-R1"
+                    )
+                }
+
+                parameterCard("Performance") {
+                    toggleRow(
+                        label: "SSD Streaming", icon: "internaldrive",
+                        isOn: ssdStreamingBinding,
+                        tint: SwiftBuddyTheme.warning,
+                        hint: "Stream MoE expert weights from NVMe (requires model reload)"
+                    )
+                    toggleRow(
+                        label: "TurboQuant KV", icon: "bolt.badge.clock",
+                        isOn: $viewModel.config.turboKV,
+                        tint: SwiftBuddyTheme.success,
+                        hint: "3-bit KV compression for massive context windows"
                     )
                 }
 
@@ -235,8 +319,8 @@ struct SettingsView: View {
 
                 // Reset button
                 Button(role: .destructive) {
-                    viewModel.config = .default
-                    viewModel.systemPrompt = ""
+                    viewModel.config = .default   // didSet triggers config.save()
+                    viewModel.systemPrompt = ""    // didSet clears UserDefaults key
                 } label: {
                     HStack {
                         Image(systemName: "arrow.counterclockwise")
@@ -256,6 +340,39 @@ struct SettingsView: View {
             }
             .padding(.top, 8)
         }
+        // Generation params are hot-applied per request — no restart needed.
+        // Flash a brief badge so the user knows the change was captured.
+        .onChange(of: viewModel.config.temperature)       { flashApplied() }
+        .onChange(of: viewModel.config.topP)              { flashApplied() }
+        .onChange(of: viewModel.config.topK)              { flashApplied() }
+        .onChange(of: viewModel.config.minP)              { flashApplied() }
+        .onChange(of: viewModel.config.maxTokens)         { flashApplied() }
+        .onChange(of: viewModel.config.repetitionPenalty) { flashApplied() }
+        .onChange(of: viewModel.config.enableThinking)    { flashApplied() }
+        .onChange(of: viewModel.config.kvBits)            { flashApplied() }
+        .onChange(of: viewModel.config.prefillSize)       { flashApplied() }
+        .onChange(of: viewModel.config.seed)              { flashApplied() }
+        .overlay(alignment: .top) {
+            if showAppliedBadge {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(SwiftBuddyTheme.success)
+                        .font(.caption)
+                    Text("Applied — takes effect on next message")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(.ultraThinMaterial)
+                .background(SwiftBuddyTheme.success.opacity(0.12))
+                .clipShape(Capsule())
+                .overlay(Capsule().strokeBorder(SwiftBuddyTheme.success.opacity(0.3), lineWidth: 1))
+                .padding(.top, 8)
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .animation(.easeInOut(duration: 0.2), value: showAppliedBadge)
+            }
+        }
     }
 
     // MARK: — Engine Tab
@@ -264,14 +381,57 @@ struct SettingsView: View {
         ScrollView {
             VStack(spacing: 16) {
                 parameterCard("Local API Server") {
-                    HStack {
-                        Label(server.isOnline ? "Online" : "Offline", systemImage: "network")
-                            .foregroundStyle(server.isOnline ? SwiftBuddyTheme.success : SwiftBuddyTheme.textSecondary)
-                            .font(.callout.weight(.medium))
-                        Spacer()
-                        Text("\(server.host):\(server.port)")
-                            .foregroundStyle(SwiftBuddyTheme.textSecondary)
-                            .font(.callout.monospacedDigit())
+                    // ── Endpoint URL card (tap to copy) ─────────────────────
+                    let endpointURL = "http://\(server.host):\(server.port)"
+                    Button {
+                        copyEndpoint(endpointURL)
+                    } label: {
+                        HStack(spacing: 12) {
+                            // Status dot
+                            Circle()
+                                .fill(server.isOnline ? SwiftBuddyTheme.success : SwiftBuddyTheme.textTertiary)
+                                .frame(width: 8, height: 8)
+                                .shadow(color: server.isOnline ? SwiftBuddyTheme.success.opacity(0.6) : .clear,
+                                        radius: 4)
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(server.isOnline ? "Online" : "Offline")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(server.isOnline ? SwiftBuddyTheme.success : SwiftBuddyTheme.textTertiary)
+                                Text(endpointURL)
+                                    .font(.system(.callout, design: .monospaced))
+                                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                            }
+
+                            Spacer()
+
+                            // Copy / confirm icon
+                            Image(systemName: endpointCopied ? "checkmark" : "doc.on.doc")
+                                .font(.caption)
+                                .foregroundStyle(endpointCopied ? SwiftBuddyTheme.success : SwiftBuddyTheme.textTertiary)
+                                .animation(.easeInOut(duration: 0.2), value: endpointCopied)
+                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity)
+                        .background(SwiftBuddyTheme.background.opacity(0.6))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10)
+                                .strokeBorder(
+                                    server.isOnline
+                                        ? SwiftBuddyTheme.success.opacity(0.3)
+                                        : Color.white.opacity(0.07),
+                                    lineWidth: 1
+                                )
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    // Quick-use hint for external tools
+                    if server.isOnline {
+                        Text("Compatible with OpenAI SDK, LM Studio, Continue, Cursor")
+                            .font(.caption2)
+                            .foregroundStyle(SwiftBuddyTheme.textTertiary)
                     }
 
                     toggleRow(
@@ -376,22 +536,92 @@ struct SettingsView: View {
                     )
                 }
 
-                parameterCard("Appearance") {
-                    HStack {
-                        Label("Color Scheme", systemImage: "paintpalette")
-                            .foregroundStyle(SwiftBuddyTheme.textPrimary)
-                            .font(.callout)
-                        Spacer()
-                    }
-                    Picker("", selection: $appearance.preference) {
-                        HStack { Image(systemName: "moon.fill"); Text("Dark") }.tag("dark")
-                        HStack { Image(systemName: "sun.max.fill"); Text("Light") }.tag("light")
-                        HStack { Image(systemName: "circle.lefthalf.filled"); Text("System") }.tag("system")
-                    }
-                    .pickerStyle(.segmented)
-                    .tint(SwiftBuddyTheme.accent)
-                }
+                parameterCard("Advanced Engine") {
+                    // ── TurboKV (per-request, no reload needed) ──────────────────────────
+                    toggleRow(
+                        label: "TurboKV Compression", icon: "memorychip",
+                        isOn: $viewModel.config.turboKV,
+                        tint: SwiftBuddyTheme.warning,
+                        hint: "3-bit PolarQuant+QJL compression for KV history >8K tokens. Halves long-context RAM — applied per request"
+                    )
 
+                    Divider().background(SwiftBuddyTheme.divider)
+
+                    // ── SSD Expert Streaming (load-time — shows reload prompt) ────
+                    VStack(alignment: .leading, spacing: 6) {
+                        toggleRow(
+                            label: "SSD Expert Streaming", icon: "externaldrive.fill",
+                            isOn: ssdStreamingBinding,
+                            tint: SwiftBuddyTheme.accentSecondary,
+                            hint: "mmap expert weights from NVMe — only active expert pages stay in RAM. Auto-enabled for MoE catalog models."
+                        )
+                        if effectiveStreamExpertsSetting != currentModelIsMoE {
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "arrow.clockwise.circle.fill")
+                                        .foregroundStyle(SwiftBuddyTheme.warning)
+                                        .font(.caption)
+                                    Text("Reload model to apply this change")
+                                        .font(.caption2.weight(.medium))
+                                        .foregroundStyle(SwiftBuddyTheme.warning)
+                                    Spacer()
+                                    Button("Reload") {
+                                        let currentId: String? = {
+                                            if case .ready(let id) = engine.state { return id }
+                                            return nil
+                                        }()
+                                        if let id = currentId {
+                                            Task {
+                                                engine.unload()
+                                                await engine.load(modelId: id)
+                                            }
+                                        }
+                                    }
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(SwiftBuddyTheme.accent)
+                                    .buttonStyle(.plain)
+                                }
+
+                                switch engine.state {
+                                case .loading(let progress, let stage):
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        HStack {
+                                            Text(stage)
+                                                .font(.caption2.weight(.medium))
+                                                .foregroundStyle(SwiftBuddyTheme.textSecondary)
+                                            Spacer()
+                                            Text("\(Int(progress * 100))%")
+                                                .font(.caption2.monospacedDigit())
+                                                .foregroundStyle(SwiftBuddyTheme.textTertiary)
+                                        }
+                                        ProgressView(value: progress)
+                                            .tint(SwiftBuddyTheme.accent)
+                                    }
+                                case .downloading(let progress, let speed):
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        HStack {
+                                            Text("Downloading model files")
+                                                .font(.caption2.weight(.medium))
+                                                .foregroundStyle(SwiftBuddyTheme.textSecondary)
+                                            Spacer()
+                                            Text("\(Int(progress * 100))% · \(speed)")
+                                                .font(.caption2.monospacedDigit())
+                                                .foregroundStyle(SwiftBuddyTheme.textTertiary)
+                                        }
+                                        ProgressView(value: progress)
+                                            .tint(SwiftBuddyTheme.accent)
+                                    }
+                                default:
+                                    EmptyView()
+                                }
+                            }
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 6)
+                            .background(SwiftBuddyTheme.warning.opacity(0.08))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                    }
+                }
                 #if os(iOS)
                 parameterCard("iOS Performance") {
                     toggleRow(
@@ -414,9 +644,77 @@ struct SettingsView: View {
                 }
                 #endif
 
+                // ── CLI Equivalent ──────────────────────────────────────────
+                parameterCard("CLI Equivalent") {
+                    Text("Run standalone server with these settings:")
+                        .font(.caption2)
+                        .foregroundStyle(SwiftBuddyTheme.textTertiary)
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        Text(cliCommand)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(SwiftBuddyTheme.textSecondary)
+                            .textSelection(.enabled)
+                            .padding(.vertical, 6)
+                    }
+
+                    Button {
+                        copyCLI()
+                    } label: {
+                        Label(
+                            cliCopied ? "Copied!" : "Copy Command",
+                            systemImage: cliCopied ? "checkmark" : "doc.on.doc"
+                        )
+                        .font(.caption.weight(.medium))
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(cliCopied ? SwiftBuddyTheme.success : SwiftBuddyTheme.accent)
+                    .animation(.easeInOut(duration: 0.2), value: cliCopied)
+                }
                 Spacer(minLength: 20)
             }
             .padding(.top, 8)
+        }
+    }
+
+    // MARK: - Appearance Tab
+
+    // Use local state for the picker to avoid triggering a @Published write
+    // directly from within a view update cycle, which causes the crash:
+    // "Publishing changes from within view updates is not allowed"
+    @State private var localColorScheme: String = "dark"
+
+    private var appearanceTab: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                parameterCard("Theme") {
+                    HStack {
+                        Label("Color Scheme", systemImage: "paintpalette")
+                            .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                            .font(.callout)
+                        Spacer()
+                    }
+                    Picker("", selection: $localColorScheme) {
+                        Text("Dark").tag("dark")
+                        Text("Light").tag("light")
+                        Text("System").tag("system")
+                    }
+                    .pickerStyle(.segmented)
+                    .tint(SwiftBuddyTheme.accent)
+                    .onChange(of: localColorScheme) { newValue in
+                        // Defer the @Published write to avoid the view update crash
+                        Task { @MainActor in
+                            appearance.preference = newValue
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 24)
+        }
+        .onAppear {
+            localColorScheme = appearance.preference
         }
     }
 
@@ -597,6 +895,59 @@ struct SettingsView: View {
                 .strokeBorder(SwiftBuddyTheme.warning.opacity(0.45), lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.18), radius: 14, y: 6)
+    }
+
+    private func flashApplied() {
+        withAnimation { showAppliedBadge = true }
+        // Cancel any pending hide before scheduling a new one to prevent
+        // stacked closures from causing flicker when sliders are dragged rapidly.
+        toastHideWork?.cancel()
+        let work = DispatchWorkItem {
+            withAnimation { showAppliedBadge = false }
+        }
+        toastHideWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
+    }
+
+    /// Build the equivalent `swift run SwiftLM` command from current settings.
+    private var cliCommand: String {
+        buildCLICommand(
+            config: viewModel.config,
+            host: server.host,
+            port: server.port,
+            parallel: server.startupConfiguration.parallelSlots,
+            apiKeySet: !server.startupConfiguration.apiKey.isEmpty,
+            modelId: {
+                if case .ready(let id) = engine.state { return id }
+                return nil
+            }()
+        )
+    }
+
+    private func copyCLI() {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(cliCommand, forType: .string)
+        #else
+        UIPasteboard.general.string = cliCommand
+        #endif
+        withAnimation { cliCopied = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            withAnimation { cliCopied = false }
+        }
+    }
+
+    private func copyEndpoint(_ url: String) {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url, forType: .string)
+        #else
+        UIPasteboard.general.string = url
+        #endif
+        withAnimation { endpointCopied = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            withAnimation { endpointCopied = false }
+        }
     }
 
     private func saveServerConfiguration() {

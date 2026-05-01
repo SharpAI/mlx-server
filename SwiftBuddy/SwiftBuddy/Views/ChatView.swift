@@ -137,19 +137,28 @@ struct ChatView: View {
         case .downloading(let progress, let speed):
             DownloadAnimationView(progress: progress, speed: speed)
 
-        case .loading:
+        case .loading(let progress, let stage):
             VStack(spacing: 16) {
                 ZStack {
                     Circle()
                         .stroke(SwiftBuddyTheme.accent.opacity(0.15), lineWidth: 3)
                         .frame(width: 64, height: 64)
-                    ProgressView()
+                    ProgressView(value: progress)
                         .controlSize(.large)
                         .tint(SwiftBuddyTheme.accent)
+                        .frame(width: 64)
                 }
-                Text("Loading model into Metal GPU…")
-                    .font(.subheadline)
-                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
+                VStack(spacing: 4) {
+                    Text("Loading model into Metal GPU…")
+                        .font(.subheadline)
+                        .foregroundStyle(SwiftBuddyTheme.textSecondary)
+                    Text(stage)
+                        .font(.caption)
+                        .foregroundStyle(SwiftBuddyTheme.textTertiary)
+                    Text("\(Int(progress * 100))%")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(SwiftBuddyTheme.textTertiary)
+                }
             }
 
         case .idle:
@@ -252,13 +261,18 @@ struct ChatView: View {
         switch engine.state {
         case .idle:
             bannerRow(icon: "cpu", text: "No model loaded", color: SwiftBuddyTheme.textTertiary)
-        case .loading:
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.mini).tint(SwiftBuddyTheme.accent)
-                Text("Loading model…")
-                    .font(.caption)
-                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
-                Spacer()
+        case .loading(let progress, let stage):
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(stage)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(SwiftBuddyTheme.textSecondary)
+                    Spacer()
+                    Text("\(Int(progress * 100))%")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(SwiftBuddyTheme.textTertiary)
+                }
+                ProgressView(value: progress).tint(SwiftBuddyTheme.accent)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
@@ -527,7 +541,7 @@ extension ModelState {
     var shortLabel: String {
         switch self {
         case .idle:                        return "No model"
-        case .loading:                     return "Loading…"
+        case .loading(let progress, _):    return "\(Int(progress * 100))% loading"
         case .downloading(let p, _):       return "\(Int(p * 100))% downloading"
         case .ready(let modelId):          return modelId.components(separatedBy: "/").last ?? modelId
         case .generating:                  return "Generating"

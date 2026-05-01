@@ -72,7 +72,7 @@ private struct TransformersTokenizerBridge: MLXLMCommon.Tokenizer, Sendable {
 public enum ModelState: Equatable, Sendable {
     case idle
     case downloading(progress: Double, speed: String)
-    case loading
+    case loading(progress: Double, stage: String)
     case ready(modelId: String)
     case generating
     case error(String)
@@ -319,7 +319,7 @@ public final class InferenceEngine: ObservableObject {
     }
 
     private func loadVerifiedModel(modelId: String) async {
-        state = .loading
+        setLoadingState(progress: 0.05, stage: "Preparing model configuration")
         currentModelId = modelId
 
         do {
@@ -331,10 +331,13 @@ public final class InferenceEngine: ObservableObject {
             // at load time — only active expert pages touch RAM during inference.
             var config = ModelConfiguration(id: modelId)
             let isMoE = ModelCatalog.all.first(where: { $0.id == modelId })?.isMoE ?? false
-            if isMoE {
+            let generationConfig = GenerationConfig.load()
+            // SSD expert streaming defaults ON for MoE until the user saves a preference.
+            // Once persisted, the saved toggle becomes authoritative for all models.
+            let shouldStream = generationConfig.effectiveStreamExperts(defaultingTo: isMoE)
+            if shouldStream {
                 config.lazyLoad = true
                 let modelDir = ModelStorage.snapshotDirectory(for: modelId)
-                // directIO=true on macOS (5 GB/s NVMe pread), false on iOS (mmap fallback)
                 ExpertStreamingConfig.shared.activate(
                     modelDirectory: modelDir,
                     useDirectIO: {
@@ -345,15 +348,23 @@ public final class InferenceEngine: ObservableObject {
                         #endif
                     }()
                 )
+                print("[InferenceEngine] SSD expert streaming: enabled (isMoE=\(isMoE), persisted=\(GenerationConfig.hasPersistedConfig), setting=\(generationConfig.streamExperts))")
+            } else {
+                print("[InferenceEngine] SSD expert streaming: disabled")
             }
 
+            setLoadingState(progress: 0.15, stage: "Inspecting model architecture")
             let downloader = HubDownloader(hub: hub)
             let architecture = try await ModelArchitectureProbe.inspect(
                 configuration: config,
                 downloader: downloader
             )
 
-            let speedTracker = DownloadSpeedTracker()
+            let loadingStage = architecture.supportsVision
+                ? "Loading multimodal model"
+                : "Loading language model"
+
+            setLoadingState(progress: 0.22, stage: loadingStage)
 
             if architecture.supportsVision {
                 container = try await VLMModelFactory.shared.loadContainer(
@@ -361,22 +372,10 @@ public final class InferenceEngine: ObservableObject {
                     using: TransformersTokenizerLoader(),
                     configuration: config
                 ) { [weak self] progress in
-                    speedTracker.record(totalBytes: progress.completedUnitCount)
-                    let smoothedSpeed = speedTracker.speedBytesPerSec
-
                     Task { @MainActor in
                         guard let self else { return }
                         let pct = progress.fractionCompleted
-                        let speedStr = smoothedSpeed
-                            .map { String(format: "%.1f MB/s", $0 / 1_000_000) } ?? ""
-                        self.state = .downloading(progress: pct, speed: speedStr)
-
-                        self.downloadManager.updateProgress(ModelDownloadProgress(
-                            modelId: modelId,
-                            fractionCompleted: pct,
-                            currentFile: "",
-                            speedMBps: smoothedSpeed.map { $0 / 1_000_000 }
-                        ))
+                        self.setLoadingState(progress: 0.22 + (pct * 0.68), stage: loadingStage)
                     }
                 }
             } else {
@@ -385,22 +384,10 @@ public final class InferenceEngine: ObservableObject {
                     using: TransformersTokenizerLoader(),
                     configuration: config
                 ) { [weak self] progress in
-                    speedTracker.record(totalBytes: progress.completedUnitCount)
-                    let smoothedSpeed = speedTracker.speedBytesPerSec
-
                     Task { @MainActor in
                         guard let self else { return }
                         let pct = progress.fractionCompleted
-                        let speedStr = smoothedSpeed
-                            .map { String(format: "%.1f MB/s", $0 / 1_000_000) } ?? ""
-                        self.state = .downloading(progress: pct, speed: speedStr)
-
-                        self.downloadManager.updateProgress(ModelDownloadProgress(
-                            modelId: modelId,
-                            fractionCompleted: pct,
-                            currentFile: "",
-                            speedMBps: smoothedSpeed.map { $0 / 1_000_000 }
-                        ))
+                        self.setLoadingState(progress: 0.22 + (pct * 0.68), stage: loadingStage)
                     }
                 }
             }
@@ -410,11 +397,13 @@ public final class InferenceEngine: ObservableObject {
             downloadManager.refresh()
 
             // Verify integrity to catch incomplete downloads before marking as ready
+            setLoadingState(progress: 0.94, stage: "Verifying model files")
             guard ModelStorage.verifyModelIntegrity(for: modelId) else {
                 throw NSError(domain: "InferenceEngine", code: 1, userInfo: [NSLocalizedDescriptionKey: "Model safetensors files are incomplete. Please delete and re-download."])
             }
 
             // Read the model's actual max context length from config.json
+            setLoadingState(progress: 0.98, stage: "Reading model limits")
             if let ctxLen = ModelStorage.readMaxContextLength(for: modelId) {
                 self.maxContextWindow = ctxLen
                 print("[InferenceEngine] Model context window: \(ctxLen) tokens")
@@ -464,6 +453,10 @@ public final class InferenceEngine: ObservableObject {
         MLX.Memory.cacheLimit = 0
     }
 
+    private func setLoadingState(progress: Double, stage: String) {
+        state = .loading(progress: min(max(progress, 0), 1), stage: stage)
+    }
+
     private func markModelCorrupted(modelId: String?, message: String) {
         let failedModelId = modelId ?? currentModelId
         releaseLoadedModelResources()
@@ -488,6 +481,44 @@ public final class InferenceEngine: ObservableObject {
     }
 
     // MARK: — Generation
+}
+
+// MARK: — Helpers
+
+/// Removes all `<think>…</think>` spans from `text`, including the closing tag's
+/// trailing newline when present.  Used to sanitise assistant history messages
+/// before they are re-submitted to the Jinja chat-template renderer on subsequent
+/// turns — Qwen3 (and similar "thinking" models) raise TemplateException error 1
+/// when prior assistant turns contain raw thinking tags.
+///
+/// Trimming is applied only when at least one tag span was actually removed so
+/// that assistant messages without thinking content are returned byte-for-byte
+/// (preserving leading spaces, code-block indentation, etc.).
+func stripThinkingTags(from text: String) -> String {
+    var result = text
+    var stripped = false
+    while let openRange = result.range(of: "<think>") {
+        stripped = true
+        if let closeRange = result.range(of: "</think>", range: openRange.lowerBound..<result.endIndex) {
+            // Include the optional newline that immediately follows </think>
+            var endIdx = closeRange.upperBound
+            if endIdx < result.endIndex && result[endIdx] == "\n" {
+                endIdx = result.index(after: endIdx)
+            }
+            result.removeSubrange(openRange.lowerBound..<endIdx)
+        } else {
+            // Unclosed <think> — strip from opening tag to end of string
+            result.removeSubrange(openRange.lowerBound...)
+            break
+        }
+    }
+    // Only trim surrounding whitespace that was introduced by stripping;
+    // leave untouched messages that contained no think tags.
+    return stripped ? result.trimmingCharacters(in: .whitespacesAndNewlines) : result
+}
+
+extension InferenceEngine {
+    // MARK: — Generation (continued)
 
     public nonisolated func generate(
         messages: [ChatMessage],
@@ -515,9 +546,20 @@ public final class InferenceEngine: ObservableObject {
                         if msg.role == .system {
                             pendingSystemContext += msg.content + "\n\n"
                         } else {
-                            var roleRaw = msg.role.rawValue
-                            if roleRaw == "assistant" { roleRaw = "model" }
+                            // Use the canonical role name — Qwen3 (and most models) use
+                            // "assistant", not "model". The "model" alias is Gemma-specific
+                            // and breaks Qwen3's Jinja chat template on multi-turn history.
+                            let roleRaw = msg.role.rawValue  // "user" | "assistant" | "tool"
                             var content = msg.content
+                            
+                            // Strip <think>…</think> blocks from prior assistant turns.
+                            // If the model generated thinking content on a previous turn and
+                            // it was not already split into thinkingContent, the raw tags will
+                            // be present in `content`. Feeding them back into the Jinja template
+                            // on the next request causes TemplateException error 1 on Qwen3.
+                            if msg.role == .assistant {
+                                content = stripThinkingTags(from: content)
+                            }
                             
                             if roleRaw == "user" && !pendingSystemContext.isEmpty {
                                 content = "[SYSTEM CONTEXT / PERSONA DATA]\n" + pendingSystemContext + "\n[END CONTEXT]\n\n" + content
@@ -545,17 +587,46 @@ public final class InferenceEngine: ObservableObject {
                     var outputText = ""
                     var tokenCount = 0
 
-                    let userInput = UserInput(messages: mlxMessages)
+                    // Set RNG seed for reproducible output when requested.
+                    if let seed = config.seed {
+                        MLX.seed(seed)
+                    }
+
+                    // Pass enable_thinking to the Jinja chat template so the model
+                    // actually generates <think> blocks when thinking mode is ON.
+                    // Without this kwarg, Qwen3's template defaults to thinking=false
+                    // regardless of what the UI toggle shows.
+                    let additionalContext: [String: any Sendable]? = config.enableThinking
+                        ? ["enable_thinking": true]
+                        : ["enable_thinking": false]
+                    let userInput = UserInput(
+                        messages: mlxMessages,
+                        additionalContext: additionalContext
+                    )
                     let lmInput = try await container.prepare(input: userInput)
                     
-                    // Approximate the input token size (as LMInput wrapper blocks direct inspection without private API)
-                    // MLX often counts 1 word roughly as 1.3 tokens. 
-                    let stringLength = mlxMessages.map { ($0["content"] ?? "").count }.reduce(0, +)
-                    let baseTokens = Int(Double(stringLength) / 3.5)
+                    // Use the real token count from the prepared LMInput rather than
+                    // a character-length heuristic (which was consistently off by 2–3×
+                    // for CJK and code content).
+                    let baseTokens = lmInput.text.tokens.size
                     self.activeContextTokens = baseTokens
                     
                     // maxContextWindow is already set during loadModel() from config.json
-                    
+
+                    // TurboKV: enable 3-bit PolarQuant+QJL on every KVCacheSimple layer
+                    // before generation. Must be set on the model (not the cache) so the
+                    // cache inherits the flag when newCache() is called inside generate().
+                    if config.turboKV {
+                        await container.perform { ctx in
+                            for module in ctx.model.modules() {
+                                if let simple = module as? KVCacheSimple {
+                                    simple.turboQuantEnabled = true
+                                }
+                            }
+                        }
+                        print("[InferenceEngine] TurboKV enabled for this request")
+                    }
+
                     let stream: AsyncStream<Generation> = try await container.generate(
                         input: lmInput,
                         parameters: params
