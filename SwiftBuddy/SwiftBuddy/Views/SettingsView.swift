@@ -702,7 +702,7 @@ struct SettingsView: View {
                     }
                     .pickerStyle(.segmented)
                     .tint(SwiftBuddyTheme.accent)
-                    .onChange(of: localColorScheme) { newValue in
+                    .onChange(of: localColorScheme) { _, newValue in
                         // Defer the @Published write to avoid the view update crash
                         Task { @MainActor in
                             appearance.preference = newValue
@@ -917,7 +917,7 @@ struct SettingsView: View {
             port: server.port,
             parallel: server.startupConfiguration.parallelSlots,
             apiKeySet: !server.startupConfiguration.apiKey.isEmpty,
-            modelId: {
+            modelId: { () -> String? in
                 if case .ready(let id) = engine.state { return id }
                 return nil
             }()
