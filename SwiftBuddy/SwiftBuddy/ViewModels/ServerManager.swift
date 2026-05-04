@@ -130,7 +130,8 @@ final class ServerManager: ObservableObject {
         guard !isOnline else { return }
         let configuration = startupConfiguration.normalized
 
-        task = Task {
+        task = Task.detached { [weak self] in
+            guard let self = self else { return }
             do {
                 let router = Router()
 
@@ -259,18 +260,24 @@ final class ServerManager: ObservableObject {
                     configuration: .init(address: .hostname(configuration.host, port: configuration.port))
                 )
 
-                self.isOnline = true
-                self.host = configuration.host
-                self.port = configuration.port
-                self.runningConfiguration = configuration
-                self.restartRequired = false
+                await MainActor.run {
+                    self.isOnline = true
+                    self.host = configuration.host
+                    self.port = configuration.port
+                    self.runningConfiguration = configuration
+                    self.restartRequired = false
+                }
                 ConsoleLog.shared.info("Server online at http://\(configuration.host):\(configuration.port)")
 
                 try await app.runService()
             } catch {
                 print("Server failed: \(error)")
                 ConsoleLog.shared.error("Server failed: \(error.localizedDescription)")
-                self.isOnline = false
+                await MainActor.run {
+                    self.isOnline = false
+                    self.runningConfiguration = nil
+                    self.restartRequired = false
+                }
             }
         }
     }

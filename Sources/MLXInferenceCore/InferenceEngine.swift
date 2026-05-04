@@ -613,24 +613,27 @@ extension InferenceEngine {
                     
                     // maxContextWindow is already set during loadModel() from config.json
 
-                    // TurboKV: enable 3-bit PolarQuant+QJL on every KVCacheSimple layer
-                    // before generation. Must be set on the model (not the cache) so the
-                    // cache inherits the flag when newCache() is called inside generate().
+                    // TurboKV: enable 3-bit PolarQuant+QJL on every KVCacheSimple cache layer.
+                    // KVCacheSimple is a cache object (not a neural-network Module), so we
+                    // iterate the cache array — mirroring the pattern in Server.swift.
+                    let cache = await container.perform { ctx in ctx.model.newCache(parameters: params) }
                     if config.turboKV {
-                        await container.perform { ctx in
-                            for module in ctx.model.modules() {
-                                if let simple = module as? KVCacheSimple {
-                                    simple.turboQuantEnabled = true
-                                }
+                        for layer in cache {
+                            if let simple = layer as? KVCacheSimple {
+                                simple.turboQuantEnabled = true
                             }
                         }
                         print("[InferenceEngine] TurboKV enabled for this request")
                     }
 
-                    let stream: AsyncStream<Generation> = try await container.generate(
-                        input: lmInput,
-                        parameters: params
-                    )
+                    let stream: AsyncStream<Generation> = try await container.perform { ctx in
+                        try MLXLMCommon.generate(
+                            input: lmInput,
+                            cache: cache,
+                            parameters: params,
+                            context: ctx
+                        )
+                    }
 
                     for await generation in stream {
                         guard !Task.isCancelled else { break }

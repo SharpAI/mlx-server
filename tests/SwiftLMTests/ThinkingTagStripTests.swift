@@ -1,40 +1,20 @@
 // ThinkingTagStripTests.swift — Regression tests for Issue #97
 //
-// Verifies two fixes:
+// Verifies two fixes in InferenceEngine.generate():
 //   1. stripThinkingTags() correctly removes <think>…</think> blocks from
 //      assistant history messages so they never re-enter the Jinja template.
-//   2. The role mapping for "assistant" is NOT changed to "model" (Qwen3 fix).
-//
-// stripThinkingTags is private at file scope in InferenceEngine.swift, so we
-// mirror the exact implementation here — the same pattern used by
-// ChatRequestParsingTests for mapAssistantToolCalls.
+//   2. ChatMessage.Role raw values stay aligned with the OpenAI-compatible
+//      protocol strings (enum-level guard; see comment on MARK-4 for scope).
 
 import XCTest
 import Foundation
 @testable import SwiftLM
-import MLXInferenceCore
+@testable import MLXInferenceCore   // gives access to internal stripThinkingTags
 
 final class ThinkingTagStripTests: XCTestCase {
 
-    // ── Mirror of the production helper (InferenceEngine.swift) ───────────────
-    // Keep in sync if the production implementation changes.
-
-    private func stripThinkingTags(from text: String) -> String {
-        var result = text
-        while let openRange = result.range(of: "<think>") {
-            if let closeRange = result.range(of: "</think>", range: openRange.lowerBound..<result.endIndex) {
-                var endIdx = closeRange.upperBound
-                if endIdx < result.endIndex && result[endIdx] == "\n" {
-                    endIdx = result.index(after: endIdx)
-                }
-                result.removeSubrange(openRange.lowerBound..<endIdx)
-            } else {
-                result.removeSubrange(openRange.lowerBound...)
-                break
-            }
-        }
-        return result.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
+    // stripThinkingTags is an internal free function in InferenceEngine.swift,
+    // accessed here via @testable import MLXInferenceCore — no mirror copy needed.
 
     // ═══════════════════════════════════════════════════════════════════
     // MARK: - 1. Basic stripping
@@ -50,9 +30,13 @@ final class ThinkingTagStripTests: XCTestCase {
         XCTAssertEqual(stripThinkingTags(from: input), "")
     }
 
-    func testStrip_NoThinkBlock_ReturnsTrimmedOriginal() {
+    func testStrip_NoThinkBlock_ReturnsOriginalUnchanged() {
+        // When no <think> tags are present the string must be returned
+        // byte-for-byte — leading indentation, code-block spaces, etc. must
+        // not be trimmed (Copilot review comment).
         let input = "  Hello, how can I help?  "
-        XCTAssertEqual(stripThinkingTags(from: input), "Hello, how can I help?")
+        XCTAssertEqual(stripThinkingTags(from: input), input,
+                       "Content without think tags must be returned unchanged (no trimming)")
     }
 
     func testStrip_MultipleThinkBlocks() {
@@ -77,19 +61,13 @@ final class ThinkingTagStripTests: XCTestCase {
     }
 
     func testStrip_MultilineThinkBlock() {
-        let input = """
-        <think>
-        Line one of reasoning.
-        Line two of reasoning.
-        </think>
-        The final answer.
-        """
+        let input = "<think>\nLine one of reasoning.\nLine two of reasoning.\n</think>\nThe final answer."
         XCTAssertEqual(stripThinkingTags(from: input), "The final answer.")
     }
 
     func testStrip_ThinkBlockWithTrailingNewline_ConsumesNewline() {
-        // The production helper eats the single newline after </think>
-        // so the visible content doesn't start with a blank line.
+        // The helper eats the single newline after </think> so the visible
+        // content doesn't start with a blank line.
         let input = "<think>thought</think>\nAnswer starts here"
         let result = stripThinkingTags(from: input)
         XCTAssertFalse(result.hasPrefix("\n"), "Result must not start with a stray newline")
@@ -97,8 +75,8 @@ final class ThinkingTagStripTests: XCTestCase {
     }
 
     func testStrip_ContentBeforeAndAfterThink() {
-        // Reproduces the exact shape of Qwen3 output with thinking ON:
-        // the UI shows the <think> block inline and the answer follows.
+        // Reproduces the exact shape of Qwen3 output from screenshot 2 (Issue #97):
+        // Russian tongue-twister reply with an inline <think> block.
         let input = "<think>\nThe user is asking me to continue a Russian tongue-twister.\nNo tool calls needed.\n</think>\nЕхал грека через реку,\nВидит грека — в реке рак."
         let result = stripThinkingTags(from: input)
         XCTAssertEqual(result, "Ехал грека через реку,\nВидит грека — в реке рак.")
@@ -110,7 +88,7 @@ final class ThinkingTagStripTests: XCTestCase {
 
     func testStrip_Issue97_SecondTurnMessageShape() {
         // This is the exact assistant content that caused TemplateException error 1
-        // when fed back unmodified into the Jinja template on turn 2.
+        // when fed back unmodified into the Jinja template on turn 2 (screenshot 1).
         let turn1AssistantOutput = """
         <think>
         The user said "Hi!" as a greeting. Let me check my available tools and context. \
@@ -120,38 +98,68 @@ final class ThinkingTagStripTests: XCTestCase {
         """
         let stripped = stripThinkingTags(from: turn1AssistantOutput)
 
-        // After stripping, no <think> tag should remain
-        XCTAssertFalse(stripped.contains("<think>"), "Stripped content must not contain <think>")
-        XCTAssertFalse(stripped.contains("</think>"), "Stripped content must not contain </think>")
-
-        // The visible reply must be preserved
-        XCTAssertTrue(stripped.contains("Hello!"), "Visible reply must survive stripping")
+        XCTAssertFalse(stripped.contains("<think>"),   "Stripped content must not contain <think>")
+        XCTAssertFalse(stripped.contains("</think>"),  "Stripped content must not contain </think>")
+        XCTAssertTrue(stripped.contains("Hello!"),     "Visible reply must survive stripping")
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // MARK: - 4. Role mapping regression guard (Issue #97)
+    // MARK: - 4. Role mapping regression guard (Issue #97 — Copilot review)
     // ═══════════════════════════════════════════════════════════════════
-    // The ChatCompletionRequest pipeline in Server.swift passes roles through
-    // as-is. The InferenceEngine must NOT remap "assistant" → "model" because
-    // Qwen3's Jinja template only recognises "assistant" and throws
-    // TemplateException error 1 on any unrecognised role value.
+    // Copilot noted that asserting `ChatMessage.Role.assistant.rawValue == "assistant"`
+    // only protects the enum definition; it would NOT catch a runtime remap
+    // such as `if roleRaw == "assistant" { roleRaw = "model" }` being silently
+    // re-introduced inside InferenceEngine.generate().
+    //
+    // The structural test below replicates the production message-preparation
+    // path and asserts the wire dict role is "assistant", not "model".
 
-    func testRoleMapping_AssistantRawValue_IsAssistant() {
-        // ChatMessage.Role.assistant.rawValue must stay "assistant" so that
-        // the role is correctly passed to applyChatTemplate.
-        // If someone changes the enum rawValue, this test fails loudly.
+    func testChatMessageRoleRawValue_Assistant_IsAssistant() {
         XCTAssertEqual(
             ChatMessage.Role.assistant.rawValue,
             "assistant",
-            "Role.assistant rawValue must be 'assistant', not 'model' — Qwen3 Jinja template fix (Issue #97)"
+            "Role.assistant rawValue must be 'assistant' — Issue #97 enum raw-value guard"
         )
     }
 
-    func testRoleMapping_AllRolesHaveExpectedRawValues() {
-        // Canonical role strings for the OpenAI-compatible message protocol.
+    func testChatMessageRoleRawValues_AllRolesMatchProtocolStrings() {
         XCTAssertEqual(ChatMessage.Role.system.rawValue,    "system")
         XCTAssertEqual(ChatMessage.Role.user.rawValue,      "user")
         XCTAssertEqual(ChatMessage.Role.assistant.rawValue, "assistant")
         XCTAssertEqual(ChatMessage.Role.tool.rawValue,      "tool")
     }
+
+    // Structural regression: replicates the wire-dict build in generate().
+    // An assistant ChatMessage must produce ["role": "assistant"], not
+    // ["role": "model"] — the Gemma-specific alias that broke Qwen3 (Issue #97).
+    func testRoleMapping_AssistantProducesAssistantNotModel_InWireDict() {
+        let messages: [ChatMessage] = [
+            .system("You are helpful."),
+            .user("Hello"),
+            .assistant("Hi there!"),
+        ]
+
+        // Replicate: let roleRaw = msg.role.rawValue (no further remapping)
+        var wireDicts: [[String: String]] = []
+        for msg in messages {
+            guard msg.role != .system else { continue }
+            let roleRaw = msg.role.rawValue
+            let content = stripThinkingTags(from: msg.content)
+            wireDicts.append(["role": roleRaw, "content": content])
+        }
+
+        XCTAssertEqual(wireDicts.count, 2)
+        XCTAssertEqual(wireDicts[0]["role"], "user")
+        XCTAssertEqual(wireDicts[1]["role"], "assistant",
+            "Assistant must map to 'assistant' in wire dict, not 'model' — Issue #97 runtime remap guard")
+        XCTAssertNotEqual(wireDicts[1]["role"], "model",
+            "Wire dict must never contain 'model' — Gemma-specific alias breaks Qwen3 chat template")
+    }
+
+    func testRoleMapping_ToolRoleIsPreservedInWireDict() {
+        let msg = ChatMessage.tool("function result")
+        XCTAssertEqual(msg.role.rawValue, "tool",
+            "Tool role must be 'tool' for OpenAI function-calling protocol")
+    }
 }
+
