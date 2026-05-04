@@ -275,6 +275,8 @@ final class ServerManager: ObservableObject {
                 ConsoleLog.shared.error("Server failed: \(error.localizedDescription)")
                 await MainActor.run {
                     self.isOnline = false
+                    self.runningConfiguration = nil
+                    self.restartRequired = false
                 }
             }
         }

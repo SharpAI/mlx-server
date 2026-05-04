@@ -131,8 +131,9 @@ final class GenerationConfigPersistenceTests: XCTestCase {
     func testGenerationConfig_Load_FallsBackToDefault_WhenNoStoredData() {
         // load() with no stored data must return .default, not crash.
         // We test this by ensuring no data is in a fresh suite.
-        let freshDefaults = UserDefaults(suiteName: "com.swiftlm.test.fresh.\(UUID().uuidString)")!
-        defer { freshDefaults.removePersistentDomain(forName: "com.swiftlm.test.fresh.\(UUID().uuidString)") }
+        let freshSuite = "com.swiftlm.test.fresh.\(UUID().uuidString)"
+        let freshDefaults = UserDefaults(suiteName: freshSuite)!
+        defer { freshDefaults.removePersistentDomain(forName: freshSuite) }
 
         // The static load() reads UserDefaults.standard, so we verify the
         // fallback contract by checking that .default is a valid config.

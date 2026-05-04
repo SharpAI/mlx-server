@@ -50,13 +50,13 @@ final class SwiftBuddyServerTests: XCTestCase {
                        "Each model entry must have 'object': 'model'")
     }
 
-    func testModelsResponse_FallsBackToLocalWhenNoModelLoaded() throws {
-        // When no model is loaded, the handler returns "local" as the fallback.
-        // Clients must still receive a valid list structure.
+    func testModelsResponse_FallsBackToNoneWhenNoModelLoaded() throws {
+        // When no model is loaded, ServerManager returns "none" as the fallback ID
+        // (matching the /v1/models handler: `case .ready(let id): ... default: "none"`).
         let body: [String: Any] = [
             "object": "list",
             "data": [[
-                "id": "local",
+                "id": "none",
                 "object": "model",
                 "owned_by": "swiftbuddy"
             ]]
@@ -64,7 +64,8 @@ final class SwiftBuddyServerTests: XCTestCase {
         let data = try JSONSerialization.data(withJSONObject: body)
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let modelList = try XCTUnwrap(decoded["data"] as? [[String: Any]])
-        XCTAssertEqual(modelList[0]["id"] as? String, "local")
+        XCTAssertEqual(modelList[0]["id"] as? String, "none",
+                       "Fallback model ID must be 'none' — matches ServerManager /v1/models handler")
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -75,6 +76,8 @@ final class SwiftBuddyServerTests: XCTestCase {
     // these guard the embedded server's specific encoding.
 
     /// Builds the SSE delta string the embedded server emits for each token.
+    /// NOTE: The embedded ServerManager does NOT include `role` in the delta object
+    /// (unlike the production Server.swift sseChunk helper which may include it).
     private func makeDeltaChunk(id: String, modelId: String, delta: String, finishReason: String? = nil) -> String {
         let finishReasonJSON = finishReason.map { "\"\($0)\"" } ?? "null"
         let escaped = delta
@@ -82,9 +85,7 @@ final class SwiftBuddyServerTests: XCTestCase {
             .replacingOccurrences(of: "\"", with: "\\\"")
             .replacingOccurrences(of: "\n", with: "\\n")
             .replacingOccurrences(of: "\r", with: "\\r")
-        return """
-        data: {"id":"\(id)","object":"chat.completion.chunk","model":"\(modelId)","choices":[{"index":0,"delta":{"role":"assistant","content":"\(escaped)"},"finish_reason":\(finishReasonJSON)}]}\r\n\r\n
-        """
+        return "data: {\"id\":\"\(id)\",\"object\":\"chat.completion.chunk\",\"model\":\"\(modelId)\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\(escaped)\"},\"finish_reason\":\(finishReasonJSON)}]}\r\n\r\n"
     }
 
     func testSSEDeltaChunk_HasCorrectPrefix() {
@@ -112,7 +113,8 @@ final class SwiftBuddyServerTests: XCTestCase {
 
         let delta = try XCTUnwrap(choices[0]["delta"] as? [String: Any])
         XCTAssertEqual(delta["content"] as? String, "Hi!")
-        XCTAssertEqual(delta["role"] as? String, "assistant")
+        // The embedded server does not include "role" in streaming delta objects
+        XCTAssertNil(delta["role"], "Embedded server delta must NOT include 'role' — only content")
     }
 
     func testSSEDeltaChunk_EscapesSpecialCharacters() throws {

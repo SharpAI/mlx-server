@@ -46,8 +46,13 @@ struct SettingsView: View {
         viewModel.config.effectiveStreamExperts(defaultingTo: currentModelIsMoE)
     }
 
+    // Tracks the stream-experts value that was in effect when the current model was loaded.
+    // A mismatch with `effectiveStreamExpertsSetting` means a reload is required.
+    @State private var appliedStreamExperts: Bool? = nil
+
     private var needsModelReloadForStreamingChange: Bool {
-        effectiveStreamExpertsSetting != currentModelIsMoE
+        guard let applied = appliedStreamExperts else { return false }
+        return effectiveStreamExpertsSetting != applied
     }
 
     private var ssdStreamingBinding: Binding<Bool> {
@@ -126,6 +131,16 @@ struct SettingsView: View {
             }
             .onAppear {
                 draftServerConfiguration = server.startupConfiguration
+                // Seed the applied value from the current engine state so the reload
+                // prompt doesn't fire spuriously on first open.
+                if case .ready = engine.state {
+                    appliedStreamExperts = effectiveStreamExpertsSetting
+                }
+            }
+            .onChange(of: engine.state) { _, newState in
+                if case .ready = newState {
+                    appliedStreamExperts = effectiveStreamExpertsSetting
+                }
             }
             #if os(macOS)
             .frame(minWidth: 520, minHeight: 580)
@@ -953,24 +968,30 @@ struct SettingsView: View {
 
             switch engine.state {
             case .loading(let progress, let stage):
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(stage)
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(SwiftBuddyTheme.textSecondary)
-                        Spacer()
-                        Text("\(Int(progress * 100))%")
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(SwiftBuddyTheme.textTertiary)
-                    }
-
-                    ProgressView(value: progress)
-                        .tint(SwiftBuddyTheme.accent)
-                        .controlSize(.small)
-                }
+                progressRow(label: stage, progress: progress)
+            case .downloading(let progress, let speed):
+                progressRow(label: "Downloading · \(speed)", progress: progress)
             default:
                 EmptyView()
             }
+        }
+    }
+
+    @ViewBuilder
+    private func progressRow(label: String, progress: Double) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(label)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
+                Spacer()
+                Text("\(Int(progress * 100))%")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(SwiftBuddyTheme.textTertiary)
+            }
+            ProgressView(value: progress)
+                .tint(SwiftBuddyTheme.accent)
+                .controlSize(.small)
         }
     }
 
