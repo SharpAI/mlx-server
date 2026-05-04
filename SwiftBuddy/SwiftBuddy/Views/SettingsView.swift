@@ -919,7 +919,7 @@ struct SettingsView: View {
             apiKeySet: !server.startupConfiguration.apiKey.isEmpty,
             modelId: { () -> String? in
                 if case .ready(let id) = engine.state { return id }
-                return nil
+                return engine.loadedModelId
             }()
         )
     }
