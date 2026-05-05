@@ -18,6 +18,16 @@ CONFIGS = [
     {"name": "SSD + 16-Worker Prefetch", "flags": ["--stream-experts", "--ssd-prefetch"]}
 ]
 
+def get_draft_model(base_model: str) -> str:
+    m = base_model.lower()
+    if "qwen3" in m or "qwen2.5" in m or "qwen2" in m:
+        return "mlx-community/Qwen3.5-0.8B-MLX-4bit"
+    if "gemma" in m:
+        return "mlx-community/gemma-3-1b-it-4bit"
+    if "phi" in m:
+        return "mlx-community/phi-3-mini-4k-instruct-4bit"
+    return ""
+
 SWIFTLM_PATH = ".build/arm64-apple-macosx/release/SwiftLM"
 
 def get_physical_ram_gb():
@@ -273,6 +283,12 @@ def main():
     global CONFIGS
     if args.ssd_only:
         CONFIGS = [c for c in CONFIGS if "--stream-experts" in c["flags"]]
+
+    # Speculative Decoding Mode Auto-Injection
+    draft_model = get_draft_model(args.model)
+    if draft_model:
+        draft_name = draft_model.split("/")[-1].split("-")[1] # extract roughly '0.8B' or '1b'
+        CONFIGS.append({"name": f"TurboQuant + Speculative ({draft_name})", "flags": ["--turbo-kv", "--draft-model", draft_model]})
 
     # SwiftLM handles model downloading natively via HubApi.
     # Just pass the model ID directly — prepend mlx-community/ if no org is specified.
