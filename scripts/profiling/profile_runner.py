@@ -11,8 +11,8 @@ import sys
 import os
 
 CONFIGS = [
-    {"name": "Baseline (Stream Experts)",         "flags": ["--stream-experts"]},
-    {"name": "MTP (3 tokens/round) (Stream Experts)", "flags": ["--stream-experts", "--mtp", "--num-mtp-tokens", "3"]},
+    {"name": "Baseline",               "flags": []},
+    {"name": "MTP 1tok (Native Dense)", "flags": ["--mtp", "--num-mtp-tokens", "1"]},
 ]
 
 SWIFTLM_PATH = ".build/arm64-apple-macosx/release/SwiftLM"
@@ -183,7 +183,7 @@ def make_request_stream(prompt_len, max_tokens, port=5422):
     data = json.dumps({
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens,
-        "temperature": 0.0,
+        "temperature": 0.6,
         "stream": True
     }).encode('utf-8')
 
@@ -345,7 +345,7 @@ def main():
         
         for ctx_size in context_sizes:
             print(f"\n>> Running {ctx_size}-token context test (max generation 60)...")
-            ok, ttft, tps, peak_in_use = make_request_stream(prompt_len=ctx_size, max_tokens=60)
+            ok, ttft, tps, peak_in_use = make_request_stream(prompt_len=ctx_size, max_tokens=60, port=5423)
 
             # Wait for server to flush post-generation logs
             time.sleep(1)
