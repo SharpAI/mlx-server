@@ -331,6 +331,22 @@ struct MLXServer: AsyncParsableCommand {
             modelConfig = ModelConfiguration(id: modelId)
         }
         
+        // ── Pre-load profiling ──
+        // Resolve model directory for profiling (checks HuggingFace cache)
+        let modelDirectory = resolveModelDirectory(modelId: modelId)
+        var mainModelProfile: ModelProfile? = nil
+        if let dir = modelDirectory {
+            mainModelProfile = ModelProfiler.profile(modelDirectory: dir, modelId: modelId)
+            
+            // Fix #72 follow-up: If the user passed --stream-experts but the model
+            // is not an MoE, disable the flag early to prevent incorrect memory limits
+            // and erroneous auto-capping of draft tokens.
+            if self.streamExperts, let profile = mainModelProfile, !profile.isMoE {
+                print("[SwiftLM] ⚠️  Model does not support SSD expert streaming (\(profile.modelType) is not MoE). Ignoring --stream-experts flag.")
+                self.streamExperts = false
+            }
+        }
+
         // Inject streaming flag into config to bypass eval(model) if requested
         if self.streamExperts {
             modelConfig.lazyLoad = true
@@ -364,10 +380,6 @@ struct MLXServer: AsyncParsableCommand {
             }
         }
 
-        // ── Pre-load profiling ──
-        // Resolve model directory for profiling (checks HuggingFace cache)
-        let modelDirectory = resolveModelDirectory(modelId: modelId)
-        
         // ── Fix #72: Compute draft model footprint ONCE (Copilot review) ──────
         // Resolved before the streamExperts block so the exact byte count can be
         // reused for the early cap, both strategy branches, and logging without
@@ -382,8 +394,6 @@ struct MLXServer: AsyncParsableCommand {
         } else {
             draftFootprintBytes = 0
         }
-
-        var mainModelProfile: ModelProfile? = nil
 
         if self.streamExperts, let modelDir = modelDirectory {
             setenv("EXPERIMENTAL_SSD_STREAM", modelDir.path, 1)
@@ -421,7 +431,6 @@ struct MLXServer: AsyncParsableCommand {
             Memory.cacheLimit = computeSSDMemoryBudget(totalRAMBytes: system.totalRAMBytes, draftWeightBytes: draftFootprintBytes)
 
             // Determine safe memoryLimit sentinel
-            mainModelProfile = ModelProfiler.profile(modelDirectory: modelDir, modelId: modelId)
             let mainFootprintBytes = mainModelProfile?.weightFileSizeBytes ?? 0
             let combinedFootprint = mainFootprintBytes + draftFootprintBytes
             let physicalRAM = Int(system.totalRAMBytes)
