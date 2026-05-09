@@ -51,6 +51,29 @@ Then start the server (models download automatically if not cached):
 
 *(Add `--stream-experts` when running oversized MoE models to bypass macOS virtual memory swapping and stream expert layers directly from NVMe SSD.)*
 
+## 📊 Performance: Qwen3.6-35B on Apple Silicon
+
+Benchmark results for `Qwen3.6-35B-A3B-4bit` (35B Dense, 4-bit) on M5 Pro 64 GB, evaluating extreme context limits.
+
+### Headline Numbers
+
+| Configuration | 512 ctx | 40K ctx | 100K ctx |
+|---|---|---|---|
+| **Dense/Vanilla** | 32.1 tok/s · 33.6 GB | 24.0 tok/s · 64.2 GB | 18.6 tok/s · 63.9 GB |
+| **SSD Stream** | 15.0 tok/s · **18.8 GB** | 5.1 tok/s · 51.7 GB | 4.1 tok/s · 63.9 GB |
+| **TurboQuant** | 33.1 tok/s · 33.3 GB | 2.5 tok/s · 37.0 GB | 4.7 tok/s · 42.0 GB |
+| **TurboQuant + SpecDecode (0.8B)**| 30.5 tok/s · 34.2 GB | 7.4 tok/s · 38.1 GB | 4.5 tok/s · 43.0 GB |
+| **SSD + TurboQuant** | 14.5 tok/s · 19.3 GB | 5.4 tok/s · **23.2 GB** | 3.9 tok/s · **28.3 GB** |
+
+> Values shown as `generation speed · GPU memory allocated`
+
+**Key takeaways:**
+- 📄 **40K context on 24 GB Mac**: SSD + TurboQuant effortlessly fits a whopping 35B model inside just **23.2 GB** of memory footprint.
+- 🚀 **Speculative Decoding Rescue**: While TurboQuant compresses memory significantly, long contexts natively suffer from KV cache lookup latency (2.5 tok/s at 40K on TurboQuant alone). Firing up a tiny 0.8B Speculative Draft model reclaims operation speeds by 3× (**7.4 tok/s**) with nearly non-existent memory overhead.
+- 📚 **100K context Memory Cliff**: Running a 35B model natively at 100K context locks the entire M5 Pro hardware memory limit (**63.9 GB** memory requested/swapped). Combining SSD weight streaming and KV TurboQuant drops this by ~60% down to a highly responsive **28.3 GB**.
+
+---
+
 ## 📊 Performance: Gemma 4-26B on Apple Silicon
 
 Benchmark results for `gemma-4-26b-a4b-it-4bit` (26B MoE, 4-bit) on M5 Pro 64 GB.
