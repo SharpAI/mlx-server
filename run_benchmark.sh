@@ -221,43 +221,7 @@ if [ "$suite_opt" == "12" ]; then
     exit $?
 fi
 
-if [ "$suite_opt" == "13" ]; then
-    echo ""
-    echo "=> Starting Test 13: Gemma-4 MTP Speculative Decoding Benchmark"
-    echo "Building benchmark binary..."
-    swift build -c release --product Gemma4MTPBench
-    
-    echo ""
-    echo "--- Test 13A: Small Context (max-kv-size=512) on E2B Model ---"
-    swift run -c release Gemma4MTPBench \
-      --main-model mlx-community/gemma-4-e2b-it-4bit \
-      --asst-model mlx-community/gemma-4-E2B-it-assistant-bf16 \
-      --prompt "What is the capital of France? Please tell me the history of it in 3 sentences." \
-      --max-tokens 100 \
-      --max-kv-size 512 | grep -v "ASST DEBUG"
-      
-    echo ""
-    echo "--- Test 13B: Medium Context (max-kv-size=4096) on E2B Model ---"
-    swift run -c release Gemma4MTPBench \
-      --main-model mlx-community/gemma-4-e2b-it-4bit \
-      --asst-model mlx-community/gemma-4-E2B-it-assistant-bf16 \
-      --prompt "Write a detailed 3-paragraph essay on the impact of the Industrial Revolution on modern supply chain logistics. Ensure you include dates and specific technological advancements." \
-      --max-tokens 100 \
-      --max-kv-size 4096 | grep -v "ASST DEBUG"
-      
-    echo ""
-    echo "--- Test 13C: Large Context (max-kv-size=8192) on E2B Model ---"
-    swift run -c release Gemma4MTPBench \
-      --main-model mlx-community/gemma-4-e2b-it-4bit \
-      --asst-model mlx-community/gemma-4-E2B-it-assistant-bf16 \
-      --prompt "Explain quantum computing as if I were a 10 year old. Then, explain it to a physics graduate student." \
-      --max-tokens 100 \
-      --max-kv-size 8192 | grep -v "ASST DEBUG"
-      
-    echo ""
-    echo "✅ Gemma-4 MTP Speculative Decoding Benchmarks Complete."
-    exit 0
-fi
+
 
 echo ""
 PS3="Select a model to use: "
@@ -1377,6 +1341,45 @@ if [ "$suite_opt" == "10" ]; then
         echo "   Log: $T10_LOG"
         exit 1
     fi
+fi
+
+if [ "$suite_opt" == "13" ]; then
+    echo ""
+    echo "=> Starting Test 13: Gemma-4 MTP Speculative Decoding Benchmark"
+    
+    # Infer assistant model
+    if [[ "$FULL_MODEL" == *"gemma-4-26b"* ]]; then
+        ASST_MODEL="mlx-community/gemma-4-26B-A4B-it-assistant-bf16"
+    elif [[ "$FULL_MODEL" == *"gemma-4-e2b"* ]]; then
+        ASST_MODEL="mlx-community/gemma-4-E2B-it-assistant-bf16"
+    else
+        read -p "Enter assistant model Hub ID: " ASST_MODEL
+    fi
+
+    echo ""
+    read -p "Enter context lengths to test [default: 512,40000,100000]: " CONTEXTS
+    CONTEXTS=${CONTEXTS:-"512,40000,100000"}
+
+    echo ""
+    echo "Building benchmark binary..."
+    swift build -c release --product Gemma4MTPBench
+
+    IFS=',' read -ra ADDR <<< "$CONTEXTS"
+    for ctx in "${ADDR[@]}"; do
+        ctx=$(echo "$ctx" | tr -d ' ')
+        echo ""
+        echo "--- Test 13: Context (max-kv-size=$ctx) on $FULL_MODEL ---"
+        swift run -c release Gemma4MTPBench \
+          --main-model "$FULL_MODEL" \
+          --asst-model "$ASST_MODEL" \
+          --prompt "Write a detailed 3-paragraph essay on the impact of the Industrial Revolution on modern supply chain logistics. Ensure you include dates and specific technological advancements." \
+          --max-tokens 100 \
+          --max-kv-size "$ctx" | grep -v "ASST DEBUG"
+    done
+    
+    echo ""
+    echo "✅ Gemma-4 MTP Speculative Decoding Benchmarks Complete."
+    exit 0
 fi
 
 # Fallback to Test 1 for anything else
