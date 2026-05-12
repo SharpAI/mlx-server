@@ -254,16 +254,11 @@ elif [ "$suite_opt" == "5" ] || [ "$suite_opt" == "6" ]; then
 else
     options=(
         "mlx-community/gemma-4-26b-a4b-it-8bit"
+        "mlx-community/gemma-4-26b-a4b-it-4bit"
         "mlx-community/gemma-4-31b-it-8bit"
+        "mlx-community/gemma-4-31b-it-4bit"
         "mlx-community/gemma-4-e4b-it-8bit"
-        "mlx-community/gemma-4-26b-a4b-it-4bit"
-        "mlx-community/gemma-4-26b-a4b-it-4bit"
-        "mlx-community/Qwen2.5-7B-Instruct-4bit"
-        "mlx-community/Qwen2.5-14B-Instruct-4bit"
-        "mlx-community/phi-4-mlx-4bit"
-        "baa-ai/GLM-5.1-RAM-270GB-MLX"
-        "baa-ai/GLM-5.1-4bit"
-        "Thump604/DeepSeek-V4-Flash-MLX-Q3-mixed-gs128-affine"
+        "mlx-community/gemma-4-e4b-it-4bit"
         "Custom (Enter your own Hub ID)"
         "Quit"
     )
