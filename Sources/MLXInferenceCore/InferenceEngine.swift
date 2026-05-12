@@ -115,8 +115,17 @@ public struct InferenceMetrics: Sendable {
     public var prefillToksPerSec: Double
     /// Decode throughput — tokens generated per second after the first token.
     public var decodeToksPerSec: Double
+    /// Draft token acceptance rate (if speculative decoding is active, 0.0-1.0).
+    public var draftAcceptanceRate: Double?
 
-    public static let zero = InferenceMetrics(ttft: 0, prefillToksPerSec: 0, decodeToksPerSec: 0)
+    public init(ttft: Double, prefillToksPerSec: Double, decodeToksPerSec: Double, draftAcceptanceRate: Double? = nil) {
+        self.ttft = ttft
+        self.prefillToksPerSec = prefillToksPerSec
+        self.decodeToksPerSec = decodeToksPerSec
+        self.draftAcceptanceRate = draftAcceptanceRate
+    }
+
+    public static let zero = InferenceMetrics(ttft: 0, prefillToksPerSec: 0, decodeToksPerSec: 0, draftAcceptanceRate: nil)
 }
 
 // MARK: — InferenceEngine
@@ -348,6 +357,11 @@ public final class InferenceEngine: ObservableObject {
             var config = ModelConfiguration(id: modelId)
             let isMoE = ModelCatalog.all.first(where: { $0.id == modelId })?.isMoE ?? false
             let generationConfig = GenerationConfig.load()
+            if generationConfig.enableMTP {
+                setenv("SWIFTLM_MTP_ENABLE", "1", 1)
+            } else {
+                unsetenv("SWIFTLM_MTP_ENABLE")
+            }
             // SSD expert streaming defaults ON for MoE until the user saves a preference.
             // Once persisted, the saved toggle becomes authoritative for all models.
             let shouldStream = generationConfig.effectiveStreamExperts(defaultingTo: isMoE)
@@ -668,6 +682,8 @@ extension InferenceEngine {
                         }
                     }
 
+                    var mtpAcceptanceRate: Double? = nil
+
                     for await generation in stream {
                         guard !Task.isCancelled else { break }
 
@@ -705,6 +721,10 @@ extension InferenceEngine {
                             }
 
                             continuation.yield(GenerationToken(text: text, isThinking: thinkingActive))
+                        } else if case .info(let info) = generation {
+                            if info.totalDraftTokens > 0 {
+                                mtpAcceptanceRate = Double(info.acceptedDraftTokens) / Double(info.totalDraftTokens)
+                            }
                         }
                     }
 
@@ -723,7 +743,8 @@ extension InferenceEngine {
                     self.lastMetrics = InferenceMetrics(
                         ttft: ttft,
                         prefillToksPerSec: prefillTps,
-                        decodeToksPerSec: decodeTps
+                        decodeToksPerSec: decodeTps,
+                        draftAcceptanceRate: mtpAcceptanceRate
                     )
                 } catch let ssdError as SSDStreamingError {
                     // Corrupted/truncated safetensors — surface a clear, actionable error

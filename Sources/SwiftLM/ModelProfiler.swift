@@ -256,8 +256,8 @@ enum ModelProfiler {
         let numExperts = config.numExperts
         let numActiveExperts = config.numExpertsPerTok
 
-        // Measure weight file sizes on disk
-        let weightSize = measureWeightFiles(directory: modelDirectory)
+        // Measure weight file sizes on disk (only for MoE to avoid slow walks on dense models)
+        let weightSize = isMoE ? measureWeightFiles(directory: modelDirectory) : 0
 
         return ModelProfile(
             modelType: config.modelType ?? "unknown",

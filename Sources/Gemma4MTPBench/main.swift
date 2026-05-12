@@ -106,6 +106,11 @@ struct Gemma4MTPBench: AsyncParsableCommand {
     var skipBaseline: Bool = false
 
     mutating func run() async throws {
+        // Clamping safety limits
+        maxKVSize = min(max(maxKVSize, 128), 4096)
+        maxTokens = min(max(maxTokens, 1), 500)
+        numDraft = min(max(numDraft, 1), 8)
+
         print("""
         ╔═══════════════════════════════════════════════════════════╗
         ║   Gemma 4 E2B — MTP Speculative Decoding Benchmark       ║
@@ -150,8 +155,7 @@ struct Gemma4MTPBench: AsyncParsableCommand {
             }
             let elapsed = Date().timeIntervalSince(t0)
             baseTPS = Double(baseOut.count) / elapsed
-            let baseText = mainCtx.tokenizer.decode(tokenIds: baseOut)
-            print("      Output: \"\(baseText.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))\"")
+            print("      Output: \"\(mainCtx.tokenizer.decode(tokenIds: baseOut).trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))\"")
             print("      Speed:  \(String(format: "%.1f", baseTPS)) tok/s  (\(baseOut.count) tokens in \(String(format: "%.2f", elapsed))s)")
         }
 
@@ -211,7 +215,7 @@ struct Gemma4MTPBench: AsyncParsableCommand {
         """, terminator: "")
 
             // Correctness check
-            let baseText = mainCtx.tokenizer.decode(tokenIds: [])  // placeholder
+
             let correctOutput = mtpText.lowercased().contains("paris")
             print("""
         ║  Output correct (contains 'paris'): \(correctOutput ? "✅" : "❌")

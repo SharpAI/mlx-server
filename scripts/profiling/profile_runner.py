@@ -11,8 +11,9 @@ import sys
 import os
 
 CONFIGS = [
-    {"name": "Baseline",               "flags": []},
-    {"name": "MTP 1tok (Native Dense)", "flags": ["--mtp", "--num-mtp-tokens", "1"]},
+    {"name": "Baseline", "flags": ["--stream-experts"]},
+    {"name": "MTP Speculative", "flags": ["--stream-experts", "--mtp", "--num-mtp-tokens", "4"]},
+    {"name": "MTP + TurboQuant", "flags": ["--stream-experts", "--mtp", "--num-mtp-tokens", "4", "--turbo-kv"]},
 ]
 
 SWIFTLM_PATH = ".build/arm64-apple-macosx/release/SwiftLM"
@@ -483,7 +484,7 @@ def print_visualization(results, model_name, baseline_alloc):
         ctx_label = f"{ctx:,} tokens"
         print(f"\n  {C.BOLD}{C.WHITE}{ctx_label}{C.RESET}")
         for r in ctx_results:
-            ttft_val = float(r["ttft"])
+            ttft_val = float(r["ttft"]) if r["ttft"] != "N/A" else 0.0
             color = CONFIG_COLORS.get(r["config"], "")
             label = f"    {r['config']:<20}"
             b = bar(ttft_val, max_ttft, width=28, color=color)
