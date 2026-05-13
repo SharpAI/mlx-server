@@ -57,11 +57,13 @@ Benchmarked with `gemma-4-26b-a4b-it-4bit` running three configurations across 5
 
 ### Generation Speed (tok/s) — higher is better
 
-| Configuration | 512 tokens | 40K tokens | 100K tokens | Avg TPS |
+| Configuration | 512 tokens | 40K tokens | 100K tokens | Avg TPS* |
 |---|---|---|---|---|
-| Baseline | 70.8 | 34.3 | 25.8 | 43.6 |
-| **MTP Speculative** | 71.5 | 38.4 | 29.1 | **46.3** (+6%) |
-| **MTP + TurboQuant** ⭐ | **72.1** | **65.2** | **62.1** | **66.5** (+53%) |
+| Baseline | 70.8 | 34.3 | 25.8 | 36.6 |
+| **MTP Speculative** | 71.5 | 38.4 | 29.1 | **40.3** (1.10×) |
+| **MTP + TurboQuant** ⭐ | **72.1** | **65.2** | **62.1** | **66.2** (1.81×) |
+
+*\* Time-weighted average: `total_tokens / sum(60/TPS)` — gives correct wall-clock representation vs arithmetic mean.*
 
 ### Time to First Token (seconds) — lower is better
 
@@ -80,10 +82,10 @@ Benchmarked with `gemma-4-26b-a4b-it-4bit` running three configurations across 5
 | **MTP + TurboQuant** ⭐ | **20.3 GB / 15.8 GB** | **23.9 GB / 17.3 GB** | **26.4 GB / 18.2 GB** |
 
 **Key takeaways:**
-- 🚀 **+53% avg throughput** — MTP + TurboQuant delivers 66.5 tok/s average vs 43.6 tok/s baseline
+- 🚀 **1.81× avg throughput** — MTP + TurboQuant delivers 66.2 tok/s time-weighted vs 36.6 tok/s baseline
 - 🏎️ **Nearly 2× faster TTFT at 100K context** — 33.95s vs 63.11s baseline (46% reduction)
 - 💾 **Massive memory savings at long context** — GPU allocation drops from 54.8 GB → 23.9 GB at 40K tokens (TurboQuant KV compression)
-- 🔬 **MTP alone is free** — +6% TPS and lower TTFT with zero additional memory overhead
+- 🔬 **MTP alone is free** — 1.10× time-weighted TPS and lower TTFT with zero additional memory overhead
 
 > Run `python3 -u scripts/profiling/profile_runner.py --model gemma-4-26b-a4b-it-4bit --contexts "512,40000,100000"` to reproduce on your device.
 
