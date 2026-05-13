@@ -51,7 +51,44 @@ Then start the server (models download automatically if not cached):
 
 *(Add `--stream-experts` when running oversized MoE models to bypass macOS virtual memory swapping and stream expert layers directly from NVMe SSD.)*
 
+## 📊 Performance: MTP Speculative Decoding — Gemma 4-26B (MacBook Pro M5 Pro 64 GB)
+
+Benchmarked with `gemma-4-26b-a4b-it-4bit` running three configurations across 512 / 40K / 100K token contexts.
+
+### Generation Speed (tok/s) — higher is better
+
+| Configuration | 512 tokens | 40K tokens | 100K tokens | Avg TPS |
+|---|---|---|---|---|
+| Baseline | 70.8 | 34.3 | 25.8 | 43.6 |
+| **MTP Speculative** | 71.5 | 38.4 | 29.1 | **46.3** (+6%) |
+| **MTP + TurboQuant** ⭐ | **72.1** | **65.2** | **62.1** | **66.5** (+53%) |
+
+### Time to First Token (seconds) — lower is better
+
+| Configuration | 512 tokens | 40K tokens | 100K tokens |
+|---|---|---|---|
+| Baseline | 0.64s | 22.85s | 63.11s |
+| **MTP Speculative** | 0.34s | 20.45s | 55.17s |
+| **MTP + TurboQuant** ⭐ | **0.33s** | **13.17s** | **33.95s** |
+
+### GPU Memory (allocated / peak physical RAM)
+
+| Configuration | 512 tokens | 40K tokens | 100K tokens |
+|---|---|---|---|
+| Baseline | 20.4 GB / 15.8 GB | 54.8 GB / 19.3 GB | 54.3 GB / 23.3 GB |
+| MTP Speculative | 20.4 GB / 16.0 GB | 54.6 GB / 20.8 GB | 54.3 GB / 23.1 GB |
+| **MTP + TurboQuant** ⭐ | **20.3 GB / 15.8 GB** | **23.9 GB / 17.3 GB** | **26.4 GB / 18.2 GB** |
+
+**Key takeaways:**
+- 🚀 **+53% avg throughput** — MTP + TurboQuant delivers 66.5 tok/s average vs 43.6 tok/s baseline
+- 🏎️ **Nearly 2× faster TTFT at 100K context** — 33.95s vs 63.11s baseline (46% reduction)
+- 💾 **Massive memory savings at long context** — GPU allocation drops from 54.8 GB → 23.9 GB at 40K tokens (TurboQuant KV compression)
+- 🔬 **MTP alone is free** — +6% TPS and lower TTFT with zero additional memory overhead
+
+> Run `python3 -u scripts/profiling/profile_runner.py --model gemma-4-26b-a4b-it-4bit --contexts "512,40000,100000"` to reproduce on your device.
+
 ## 📊 Performance: Gemma 4-26B on Apple Silicon
+
 
 Benchmark results for `gemma-4-26b-a4b-it-4bit` (26B MoE, 4-bit) on M5 Pro 64 GB.
 
