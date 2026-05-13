@@ -65,7 +65,6 @@ Benchmarked with `gemma-4-26b-a4b-it-4bit` running three configurations across 5
 
 *\* Time-weighted average: `total_tokens / sum(60/TPS)` — correct wall-clock representation vs arithmetic mean.*
 
-
 ### Time to First Token (seconds) — lower is better
 
 | Configuration | 512 tokens | 40K tokens | 100K tokens |
