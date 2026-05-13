@@ -60,10 +60,11 @@ Benchmarked with `gemma-4-26b-a4b-it-4bit` running three configurations across 5
 | Configuration | 512 tokens | 40K tokens | 100K tokens | Avg TPS* |
 |---|---|---|---|---|
 | Baseline | 70.8 | 34.3 | 25.8 | 36.6 |
-| **MTP Speculative** | 71.5 | 38.4 | 29.1 | **40.3** (1.10×) |
-| **MTP + TurboQuant** ⭐ | **72.1** | **65.2** | **62.1** | **66.2** (1.81×) |
+| **MTP Speculative** | 71.5 (1.01×) | 38.4 (1.12×) | 29.1 (1.13×) | **40.3** |
+| **MTP + TurboQuant** ⭐ | **72.1 (1.02×)** | **65.2 (1.90×)** | **62.1 (2.41×)** | **66.2** |
 
-*\* Time-weighted average: `total_tokens / sum(60/TPS)` — gives correct wall-clock representation vs arithmetic mean.*
+*\* Time-weighted average: `total_tokens / sum(60/TPS)` — correct wall-clock representation vs arithmetic mean.*
+
 
 ### Time to First Token (seconds) — lower is better
 
