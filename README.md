@@ -23,6 +23,7 @@ The archive is **self-contained** — `mlx.metallib` is bundled alongside the bi
 
 ```bash
 tar -xzf SwiftLM-<version>-macos-arm64.tar.gz
+xattr -r -d com.apple.quarantine ./SwiftLM ./mlx.metallib
 ./SwiftLM --model mlx-community/Qwen2.5-3B-Instruct-4bit --port 5413
 ```
 
