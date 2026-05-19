@@ -98,6 +98,25 @@ public struct GenerationConfig: Sendable, Codable {
         self.numMTPTokens = numMTPTokens
     }
 
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.maxTokens = try container.decodeIfPresent(Int.self, forKey: .maxTokens) ?? 2048
+        self.temperature = try container.decodeIfPresent(Float.self, forKey: .temperature) ?? 0.6
+        self.topP = try container.decodeIfPresent(Float.self, forKey: .topP) ?? 1.0
+        self.topK = try container.decodeIfPresent(Int.self, forKey: .topK) ?? 50
+        self.minP = try container.decodeIfPresent(Float.self, forKey: .minP) ?? 0.0
+        self.repetitionPenalty = try container.decodeIfPresent(Float.self, forKey: .repetitionPenalty) ?? 1.05
+        self.seed = try container.decodeIfPresent(UInt64.self, forKey: .seed)
+        self.enableThinking = try container.decodeIfPresent(Bool.self, forKey: .enableThinking) ?? false
+        self.prefillSize = try container.decodeIfPresent(Int.self, forKey: .prefillSize) ?? 512
+        self.kvBits = try container.decodeIfPresent(Int.self, forKey: .kvBits)
+        self.kvGroupSize = try container.decodeIfPresent(Int.self, forKey: .kvGroupSize) ?? 64
+        self.turboKV = try container.decodeIfPresent(Bool.self, forKey: .turboKV) ?? false
+        self.streamExperts = try container.decodeIfPresent(Bool.self, forKey: .streamExperts) ?? false
+        self.enableMTP = try container.decodeIfPresent(Bool.self, forKey: .enableMTP) ?? false
+        self.numMTPTokens = try container.decodeIfPresent(Int.self, forKey: .numMTPTokens) ?? 1
+    }
+
     public static let `default` = GenerationConfig()
 
     // MARK: — Persistence
