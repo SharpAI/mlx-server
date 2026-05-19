@@ -663,6 +663,39 @@ struct MLXServer: AsyncParsableCommand {
             draftModelRef = nil
         }
 
+        // ── Load Gemma4 MTP assistant model ──
+        // Gemma4's MTP uses a separate assistant model (DualModelMTP pattern).
+        // The main model (Gemma4Model/Gemma4TextModel) does NOT conform to MTPLanguageModel;
+        // only Gemma4AssistantModel does. We must load the assistant and pass it as the
+        // "draft" model — generate(draftModel:) handles DualModelMTP.mainModelRef wiring.
+        let mtpAsstRef: DraftModelRef?
+        if self.mtp, self.draftModel == nil {
+            // Auto-resolve: strip any quantisation suffix and append '-assistant-bf16'
+            // e.g. mlx-community/gemma-4-26b-a4b-it-4bit → mlx-community/gemma-4-26B-A4B-it-assistant-bf16
+            let asstModelId = Gemma4MTPRegistry.resolveAssistant(for: modelId)
+            if let asstId = asstModelId, resolveModelDirectory(modelId: asstId) != nil {
+                print("[SwiftLM] Loading Gemma4 MTP assistant model: \(asstId)")
+                let asstConfig = ModelConfiguration(id: asstId)
+                let asstDownloader = HubDownloader(hub: HubApi(downloadBase: cacheRoot))
+                let asstContainer = try await LLMModelFactory.shared.loadContainer(
+                    from: asstDownloader,
+                    using: TransformersTokenizerLoader(),
+                    configuration: asstConfig
+                ) { _ in }
+                mtpAsstRef = await asstContainer.extractDraftModel()
+                print("[SwiftLM] MTP assistant loaded (\(self.numMtpTokens) draft tokens/round). Using DualModelMTP speculative path.")
+            } else {
+                if let asstId = asstModelId {
+                    print("[SwiftLM] ⚠️  Gemma4 MTP: assistant model '\(asstId)' not found in HF cache. Run: python -m mlx_lm.convert --hf-path \(asstId) to download it.")
+                } else {
+                    print("[SwiftLM] ⚠️  --mtp: model '\(modelId)' is not a known Gemma4 MTP model. MTP requires a Gemma4 assistant checkpoint.")
+                }
+                mtpAsstRef = nil
+            }
+        } else {
+            mtpAsstRef = nil
+        }
+
         // ── Load DFlash draft model for block-diffusion speculative decoding ──
         let dflashModel: DFlashDraftModel?
         let dflashBlockSizeConfig = self.dflashBlockSize
@@ -899,6 +932,7 @@ struct MLXServer: AsyncParsableCommand {
                 return try await handleChatCompletion(
                     request: request, bodyData: bodyData, config: config, container: container, semaphore: semaphore, stats: stats, promptCache: promptCache,
                     draftModelRef: draftModelRef, numDraftTokens: numDraftTokensConfig,
+                    mtpAsstRef: mtpAsstRef, numMtpTokens: config.numMtpTokens,
                     dflashModel: dflashModel, dflashBlockSize: dflashBlockSizeConfig,
                     dflashTargetModel: dflashTargetModel
                 )
@@ -1071,6 +1105,34 @@ struct ServerConfig: Sendable {
     let turboKV: Bool
     let mtp: Bool
     let numMtpTokens: Int
+}
+
+// ── Gemma4 MTP Assistant Model Registry ──────────────────────────────────────
+// Gemma4's MTP head lives in a separate "assistant" checkpoint (model_type=gemma4_assistant).
+// This registry maps known main model IDs → their assistant counterparts.
+// The case-insensitive suffix match handles quantisation variants like -4bit, -8bit, -bf16.
+enum Gemma4MTPRegistry {
+    private static let knownAssistants: [(prefix: String, assistant: String)] = [
+        ("mlx-community/gemma-4-26b-a4b-it",  "mlx-community/gemma-4-26B-A4B-it-assistant-bf16"),
+        ("mlx-community/gemma-4-26B-A4B-it",  "mlx-community/gemma-4-26B-A4B-it-assistant-bf16"),
+        ("mlx-community/gemma-4-e2b-it",      "mlx-community/gemma-4-E2B-it-assistant-bf16"),
+        ("mlx-community/gemma-4-E2B-it",      "mlx-community/gemma-4-E2B-it-assistant-bf16"),
+        ("mlx-community/gemma-4-e4b-it",      "mlx-community/gemma-4-E2B-it-assistant-bf16"),
+        ("mlx-community/gemma-4-E4B-it",      "mlx-community/gemma-4-E2B-it-assistant-bf16"),
+        ("mlx-community/gemma-4-31b-it",      "mlx-community/gemma-4-26B-A4B-it-assistant-bf16"),
+        ("mlx-community/gemma-4-31B-it",      "mlx-community/gemma-4-26B-A4B-it-assistant-bf16"),
+    ]
+
+    /// Returns the assistant model ID for `modelId`, or nil if this is not a Gemma4 MTP model.
+    static func resolveAssistant(for modelId: String) -> String? {
+        let lower = modelId.lowercased()
+        for (prefix, assistant) in knownAssistants {
+            if lower.hasPrefix(prefix.lowercased()) {
+                return assistant
+            }
+        }
+        return nil
+    }
 }
 
 // ── SSD Memory Budget ────────────────────────────────────────────────────────
@@ -1330,6 +1392,8 @@ func handleChatCompletion(
     promptCache: PromptCache,
     draftModelRef: DraftModelRef? = nil,
     numDraftTokens: Int = 4,
+    mtpAsstRef: DraftModelRef? = nil,
+    numMtpTokens: Int = 3,
     dflashModel: DFlashDraftModel? = nil,
     dflashBlockSize: Int? = nil,
     dflashTargetModel: (any DFlashTargetModel)? = nil
@@ -1598,6 +1662,17 @@ func handleChatCompletion(
             stream = try MLXLMCommon.generate(
                 input: lmInput, cache: cache, parameters: params, context: context,
                 draftModel: draftRef.model, numDraftTokens: numDraftTokens
+            )
+        } else if let asstRef = mtpAsstRef {
+            // Gemma4 MTP path: assistant model (DualModelMTP) is wired as draft.
+            // generate(draftModel:) detects DualModelMTP and sets mainModelRef + MTPTokenIterator.
+            // Note: Gemma4-26B is compute-bound (MoE FFN dominates). Batch verification
+            // scales linearly with tokens, so MTP net TPS ≈ vanilla. Use --turbo-kv to
+            // reduce KV size and eliminate memory pressure for best long-context throughput.
+            print("[SwiftLM] Using Gemma4 MTP speculative decoding (\(numMtpTokens) draft tokens/round)")
+            stream = try MLXLMCommon.generate(
+                input: lmInput, cache: cache, parameters: params, context: context,
+                draftModel: asstRef.model, numDraftTokens: numMtpTokens
             )
         } else if !skipPromptCache, let cachedCount = await promptCache.restore(newTokens: promptTokens, into: cache) {
             // Cache hit: KV state is pre-populated up to cachedCount tokens.
@@ -1958,7 +2033,12 @@ func handleChatStreaming(
                     // llama-server style: print newline then full response JSON
                     print("")  // end the real-time token stream line
                     let postMemSnap = MemoryUtils.snapshot()
-                    print("srv  slot done: id 0 | gen_tokens=\(completionTokenCount) | OS_RAM=\(String(format: "%.1f", postMemSnap.os))GB | MEM_DEMAND=\(String(format: "%.1f", postMemSnap.demand))GB | GPU_MEM=\(String(format: "%.1f", postMemSnap.gpu))GB")
+                    var slotDoneLog = "srv  slot done: id 0 | gen_tokens=\(completionTokenCount) | OS_RAM=\(String(format: "%.1f", postMemSnap.os))GB | MEM_DEMAND=\(String(format: "%.1f", postMemSnap.demand))GB | GPU_MEM=\(String(format: "%.1f", postMemSnap.gpu))GB"
+                    if info.totalDraftTokens > 0 {
+                        let acc = Double(info.acceptedDraftTokens) / Double(info.totalDraftTokens)
+                        slotDoneLog += " | MTP_ACCEPTED=\(info.acceptedDraftTokens)/\(info.totalDraftTokens) (\(String(format: "%.1f%%", acc * 100)))"
+                    }
+                    print(slotDoneLog)
                     let dur = genDur
                     let tokPerSec = genTokPerSec
                     let logContent: Any = hasToolCalls ? NSNull() : fullText
@@ -2016,6 +2096,8 @@ func handleChatNonStreaming(
     var tcIndex = 0
     var generationStopReason: GenerateStopReason = .stop
     var firstToken = true
+    var acceptedDraftTokens = 0
+    var totalDraftTokens = 0
     for await generation in stream {
         switch generation {
         case .chunk(let text, _):
@@ -2047,11 +2129,18 @@ func handleChatNonStreaming(
             tcIndex += 1
         case .info(let info):
             generationStopReason = info.stopReason
+            acceptedDraftTokens = info.acceptedDraftTokens
+            totalDraftTokens = info.totalDraftTokens
         }
     }
     print("")  // end the real-time token stream line
     let postMemSnap = MemoryUtils.snapshot()
-    print("srv  slot done: id 0 | gen_tokens=\(completionTokenCount) | OS_RAM=\(String(format: "%.1f", postMemSnap.os))GB | MEM_DEMAND=\(String(format: "%.1f", postMemSnap.demand))GB | GPU_MEM=\(String(format: "%.1f", postMemSnap.gpu))GB")
+    var slotDoneLog = "srv  slot done: id 0 | gen_tokens=\(completionTokenCount) | OS_RAM=\(String(format: "%.1f", postMemSnap.os))GB | MEM_DEMAND=\(String(format: "%.1f", postMemSnap.demand))GB | GPU_MEM=\(String(format: "%.1f", postMemSnap.gpu))GB"
+    if totalDraftTokens > 0 {
+        let acc = Double(acceptedDraftTokens) / Double(totalDraftTokens)
+        slotDoneLog += " | MTP_ACCEPTED=\(acceptedDraftTokens)/\(totalDraftTokens) (\(String(format: "%.1f%%", acc * 100)))"
+    }
+    print(slotDoneLog)
     let duration = Date().timeIntervalSince(genStart)
     await stats.requestFinished(tokens: completionTokenCount, duration: duration)
     await semaphore.signal()

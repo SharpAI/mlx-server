@@ -92,26 +92,51 @@ Benchmarked with `gemma-4-26b-a4b-it-4bit` running three configurations across 5
 
 ## 📊 Performance: Gemma 4-26B on Apple Silicon
 
+Benchmark results for `gemma-4-26b-a4b-it-4bit` (**26B MoE, ~4B active params/token**, 4-bit) on M5 Pro 64 GB.
 
-Benchmark results for `gemma-4-26b-a4b-it-4bit` (26B MoE, 4-bit) on M5 Pro 64 GB.
+> ⚠️ This is a **Mixture-of-Experts (MoE)** model, not a dense model. Each token activates ~4B of the 26B parameters. "Vanilla" = all experts loaded into unified RAM (no SSD streaming).
 
-### Headline Numbers
+### Headline Numbers — `gemma-4-26b-a4b-it-4bit` (4-bit MoE)
+
+> Benchmarked on **M5 Pro 64 GB** · `gemma-4-26b-a4b-it-4bit` · `./run_benchmark.sh` Option 13
+> Values shown as `generation TPS · OS RAM used` (TTFT excluded from speed measurement)
 
 | Configuration | 512 ctx | 40K ctx | 100K ctx |
 |---|---|---|---|
-| **Dense/Vanilla** | 33.0 tok/s · 23.4 GB | 20.2 tok/s · 57.0 GB | 15.7 tok/s · 56.7 GB |
-| **SSD Stream** | 10.8 tok/s · **22.2 GB** | 10.4 tok/s · **24.2 GB** | 9.0 tok/s · **27.6 GB** |
-| **TurboQuant** | 29.0 tok/s · 23.7 GB | 3.9 tok/s · 39.4 GB | 3.9 tok/s · 57.3 GB |
-| **SSD + TurboQuant** | 11.4 tok/s · **22.0 GB** | 2.5 tok/s · **22.5 GB** | 1.6 tok/s · **22.3 GB** |
+| **Vanilla (full-RAM MoE)** | 77.5 tok/s · 14.6 GB | 44.3 tok/s · 48.7 GB | 27.5 tok/s · 48.5 GB |
+| **Vanilla + MTP** | 72.7 tok/s · 16.6 GB | 44.9 tok/s · 49.4 GB | 37.5 tok/s · 49.3 GB |
+| **Vanilla + TurboQuant** | 77.3 tok/s · 14.7 GB | **70.1 tok/s · 18.2 GB** | **66.9 tok/s · 20.7 GB** |
+| **Vanilla + MTP + TurboQuant** | 73.5 tok/s · 16.6 GB | 53.8 tok/s · 19.7 GB | 32.8 tok/s · 22.0 GB |
+| **SSD Stream** | 10.8 tok/s · 22.2 GB | 10.4 tok/s · 24.2 GB | 9.0 tok/s · 27.6 GB |
+| **SSD + TurboQuant** | 11.4 tok/s · 22.0 GB | 2.5 tok/s · 22.5 GB | 1.6 tok/s · 22.3 GB |
 
-> Values shown as `generation speed · GPU memory allocated`
+> GPU Peak physical RAM (from `ioreg`): Vanilla 100K peaks at **21.8 GB** in-use · TurboQuant 100K stays at **17.1 GB** in-use
 
-**Key takeaways:**
-- 🚀 **Speed Doubled**: The newer MLX backend modifications have more than doubled raw `SSD Stream` inference speed (from 4.5 -> **10.8 tok/s**) while maintaining streaming stability.
-- 📄 **40K context on 24 GB MacBook Pro**: SSD + TurboQuant effortlessly fits a 26B model in **22.5 GB** of memory footprint.
-- 📚 **100K context on 24 GB MacBook Pro**: Due to hyper-efficient 3-bit KV compression paired with SSD weight streaming, you can process 100,000 tokens of context on a 24 GB machine — only utilizing **22.3 GB** total. (Previously required a 64 GB Mac Studio).
+**Key takeaways (4-bit):**
+- 🚀 **TurboQuant is the headline win**: At 100K context, `Vanilla + TurboQuant` delivers **66.9 tok/s** vs **27.5 tok/s** Vanilla — a **2.43× speedup**.
+- 💾 **Massive memory savings**: OS RAM at 40K context drops from **48.7 GB → 18.2 GB** with TurboQuant (63% reduction).
+- ⚡ **MTP neutral on 4-bit MoE**: The 4-bit model is compute-bound (MoE expert dispatch). Batch verification scales linearly with token count, so MTP provides no net throughput gain over vanilla at 4-bit.
+- ⚠️ **TQ + MTP undercuts TQ alone**: Adding MTP to a TurboQuant server removes the bandwidth bottleneck (KV is now tiny) but not the FFN compute — MTP then adds overhead without proportional gains.
+- 🖥️ **SSD Stream for 24 GB Macs**: Enables long-context inference with only ~22–27 GB RAM across all context depths.
 
-> Run `./run_benchmark.sh` to generate these metrics on your own device. (See **Benchmarks & Testing** below).
+### Headline Numbers — `gemma-4-26b-a4b-it-8bit` (8-bit, bandwidth-bound)
+
+> Benchmarked on **M5 Pro 64 GB** · `gemma-4-26b-a4b-it-8bit` · `./run_benchmark.sh` Option 13
+
+| Configuration | 512 ctx | 40K ctx | 100K ctx |
+|---|---|---|---|
+| **Vanilla** | 53.7 tok/s · 26.1 GB | 32.4 tok/s · 49.4 GB | 14.9 tok/s · 49.3 GB |
+| **Vanilla + MTP** ⭐ | 47.1 tok/s · 28.0 GB | **38.8 tok/s (+20%)** · 49.6 GB | **22.5 tok/s (+51%)** · 49.6 GB |
+| **Vanilla + TurboQuant** | 53.5 tok/s · 26.1 GB | **50.1 tok/s · 29.6 GB** | **48.3 tok/s · 32.0 GB** |
+| **Vanilla + MTP + TurboQuant** | 47.4 tok/s · 28.0 GB | 31.0 tok/s · 31.1 GB | 23.3 tok/s · 33.3 GB |
+
+**Key takeaways (8-bit):**
+- 🎯 **MTP works at 8-bit**: The 8-bit model is **bandwidth-bound** (2× heavier weights than 4-bit). The KV reads in the 3-token verification batch amortize across all 3 queries — so batch verification costs ~1.3× vanilla while producing 2+ tokens. Net: **+20% at 40K, +51% at 100K**.
+- 🚀 **TurboQuant still wins outright**: At 100K, TurboQuant alone gives **48.3 tok/s** vs MTP's **22.5 tok/s** — TQ eliminates memory pressure and achieves 3.24× speedup over vanilla.
+- ❌ **Don't combine TQ + MTP on 8-bit**: TurboQuant compresses the KV cache 4×, removing the bandwidth bottleneck and making MTP compute-bound again — TQ+MTP (31.0) is slower than TQ alone (50.1) at 40K.
+- 💡 **Precision-dependent guidance**: Use `--mtp` for 8-bit models at 40K+ contexts without TurboQuant. Use `--turbo-kv` (without MTP) when maximum throughput or memory efficiency is the priority.
+
+> Run `./run_benchmark.sh` → Option 13 to reproduce these metrics on your own device.
 
 ### Qwen3.6-35B-A3B-UD-MLX-4bit (Full-RAM) — M1 Ultra 64 GB
 

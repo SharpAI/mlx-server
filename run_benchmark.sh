@@ -1341,42 +1341,25 @@ fi
 if [ "$suite_opt" == "13" ]; then
     echo ""
     echo "=> Starting Test 13: Gemma-4 MTP Speculative Decoding Benchmark"
-    
-    # Infer assistant model
-    if [[ "$FULL_MODEL" == *"gemma-4-26b"* ]]; then
-        ASST_MODEL="mlx-community/gemma-4-26B-A4B-it-assistant-bf16"
-    elif [[ "$FULL_MODEL" == *"gemma-4-e2b"* ]]; then
-        ASST_MODEL="mlx-community/gemma-4-E2B-it-assistant-bf16"
-    else
-        read -p "Enter assistant model Hub ID: " ASST_MODEL
-    fi
 
     echo ""
     read -p "Enter context lengths to test [default: 512,40000,100000]: " CONTEXTS
     CONTEXTS=${CONTEXTS:-"512,40000,100000"}
 
     echo ""
-    echo "Building benchmark binary..."
-    swift build -c release --product Gemma4MTPBench
+    echo "Note: Test 13 uses the pre-built SwiftLM binary (same as Test 1)."
+    echo "      Make sure you have run ./build.sh first."
+    echo ""
 
-    IFS=',' read -ra ADDR <<< "$CONTEXTS"
-    for ctx in "${ADDR[@]}"; do
-        ctx=$(echo "$ctx" | tr -d ' ')
-        echo ""
-        echo "--- Test 13: Context (max-kv-size=$ctx) on $FULL_MODEL ---"
-        swift run -c release Gemma4MTPBench \
-          --main-model "$FULL_MODEL" \
-          --asst-model "$ASST_MODEL" \
-          --prompt "Write a detailed 3-paragraph essay on the impact of the Industrial Revolution on modern supply chain logistics. Ensure you include dates and specific technological advancements." \
-          --max-tokens 100 \
-          --max-kv-size "$ctx" | grep -v "ASST DEBUG"
-    done
-    
+    python3 -u scripts/profiling/mtp_bench.py \
+      --model "$FULL_MODEL" \
+      --contexts "$CONTEXTS" \
+      --max-tokens 60
+
     echo ""
     echo "✅ Gemma-4 MTP Speculative Decoding Benchmarks Complete."
     exit 0
 fi
-
 # Fallback to Test 1 for anything else
 echo ""
 read -p "Enter context lengths to test [default: 512,40000,100000]: " CONTEXTS

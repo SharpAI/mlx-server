@@ -54,6 +54,12 @@ public func buildCLICommand(
     if config.enableThinking {
         parts.append("--thinking")
     }
+    if config.enableMTP {
+        parts.append("--mtp")
+        if config.numMTPTokens != 1 {
+            parts.append("--num-mtp-tokens \(config.numMTPTokens)")
+        }
+    }
     if let seed = config.seed {
         parts.append("--seed \(seed)")
     }
